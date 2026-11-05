@@ -1,0 +1,33 @@
+{
+  "id": "/",
+  "name": "BANKAI",
+  "short_name": "BANKAI",
+  "description": "Controle de caixa pessoal: entradas, gastos, cartões e fatura. Compartilhe comprovantes direto do banco.",
+  "start_url": "/?source=pwa",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0a0a0a",
+  "theme_color": "#0a0a0a",
+  "lang": "pt-BR",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }
+  ],
+  "share_target": {
+    "action": "/compartilhar",
+    "method": "POST",
+    "enctype": "multipart/form-data",
+    "params": {
+      "title": "title",
+      "text": "text",
+      "url": "url",
+      "files": [
+        {
+          "name": "media",
+          "accept": ["image/*", "application/pdf", ".jpg", ".jpeg", ".png", ".webp", ".pdf"]
+        }
+      ]
+    }
+  }
+}
