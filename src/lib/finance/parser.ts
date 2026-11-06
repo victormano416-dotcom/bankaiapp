@@ -198,7 +198,7 @@ function kindWord(raw: string): string | null {
 }
 
 const GENERIC =
-  /^(valor|total|subtotal|lancamento|data|horario|hora|banco|conta|agencia|comprovante.*|compra (aprovada|realizada|no\b.*|na\b.*)|pagamento.*|transferencia.*|pix.*|ted.*|doc.*|voce .*|recebid.*|enviad.*|cartao.*|credito|debito|outros?|opcional)$/;
+  /^(valor|total|subtotal|lancamento|data|horario|hora|banco|conta|agencia|comprovante.*|compra (aprovada|realizada|no\b.*|na\b.*)|pagamento.*|transferencia.*|pix.*|ted.*|doc.*|voce .*|recebid.*|enviad.*|cartao.*|(de|origem|remetente|pagador|para|favorecido|destinatario|recebedor|nome do favorecido|beneficiario)(?:\s*[:-]|\s+).*|credito|debito|outros?|opcional)$/;
 
 function isGeneric(description: string): boolean {
   const d = fold(description).trim();
