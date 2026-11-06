@@ -77,10 +77,7 @@ function period(value: Record<string, unknown>): { year: number; month: number; 
   const year = int(value.year, 2000, 2100, new Date().getFullYear());
   const month = int(value.month, 1, 12, new Date().getMonth() + 1);
   const dayRaw = value.day;
-  const day =
-    dayRaw == null || dayRaw === ""
-      ? null
-      : int(dayRaw, 1, 31, 1);
+  const day = dayRaw == null || dayRaw === "" ? null : int(dayRaw, 1, 31, 1);
   return { year, month, day };
 }
 
@@ -88,6 +85,11 @@ function categoryOf(value: unknown): string {
   const name = text(value, 40, "Outros");
   if ((CATEGORIES as readonly string[]).includes(name)) return name;
   return name || "Outros";
+}
+
+function cpfHintOf(value: unknown): string {
+  if (typeof value !== "string") return "";
+  return value.replace(/\D/g, "").slice(0, 11);
 }
 
 export function incomeInput(value: unknown): IncomeInput {
@@ -171,6 +173,8 @@ function profilePatch(value: unknown): Partial<Profile> {
   if (!isRecord(value)) throw new Error("Perfil inválido.");
   const patch: Partial<Profile> = {};
   if ("displayName" in value) patch.displayName = text(value.displayName, 40);
+  if ("legalName" in value) patch.legalName = text(value.legalName, 80);
+  if ("cpfHint" in value) patch.cpfHint = cpfHintOf(value.cpfHint);
   if ("avatar" in value) {
     const avatar = typeof value.avatar === "string" ? value.avatar : null;
     patch.avatar = avatar && avatar.length < 300_000 ? avatar : null;
@@ -188,10 +192,17 @@ function profilePatch(value: unknown): Partial<Profile> {
 }
 
 export function applyProfilePatch(current: Profile, patch: Partial<Profile>): Profile {
-  const next: Profile = { ...current, ...patch };
+  const next: Profile = {
+    legalName: "",
+    cpfHint: "",
+    ...current,
+    ...patch,
+  };
   if (!next.appName) next.appName = "BANKAI";
   if (!(THEMES as readonly string[]).includes(next.theme)) next.theme = "obsidian";
   next.monthStartDay = int(next.monthStartDay, 1, 28, 1);
+  next.legalName = text(next.legalName, 80);
+  next.cpfHint = cpfHintOf(next.cpfHint);
   return next;
 }
 
@@ -205,6 +216,8 @@ function snapshot(value: unknown): Bundle {
   return {
     profile: {
       displayName: "",
+      legalName: "",
+      cpfHint: "",
       avatar: null,
       appName: "BANKAI",
       theme: "obsidian",
