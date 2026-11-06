@@ -54,3 +54,40 @@ test("parcelado e Parc 01/1 continuam certos", () => {
   assert.equal(c.item.description, "Magazine Luiza");
   assert.equal(one("Compra no débito R$ 45,00 Parc 01/1 Padaria Pão Quente 12/10").item.installments, 1);
 });
+
+test("recebimento via credito", () => {
+  const recebido = one("Recebimento via cartao de credito\nValor: R$ 8,43\nChave 2-88");
+  assert.equal(recebido.method, "entrada");
+  const compra = one("Compra aprovada\nCartao de credito\nValor: R$ 8,43\nLoja Exemplo");
+  assert.equal(compra.method, "credito");
+});
+
+test("identidade do perfil distingue Pix recebido e enviado", () => {
+  const identity = { names: ["Victor Mano da Silva"], cpfDigits: "12345678900" };
+  const recebido = parseReceiptText(
+    "Comprovante\nValor: R$ 370,00\nDe: Ana Souza\nPara: Victor Mano da Silva\nPix",
+    now,
+    identity,
+  );
+  assert.equal(recebido.method, "entrada");
+  assert.equal(recebido.items[0].description, "Pix recebido de Ana Souza");
+  assert.equal(recebido.items[0].totalCents, 37000);
+
+  const enviado = parseReceiptText(
+    "Comprovante\nValor: R$ 85,90\nDe: Victor Mano da Silva\nPara: Ana Souza\nPix",
+    now,
+    identity,
+  );
+  assert.equal(enviado.method, "pix");
+  assert.equal(enviado.items[0].description, "Pix para Ana Souza");
+});
+
+test("fatura curta nao vira entrada por causa de pagamento recebido", () => {
+  const fatura = parseReceiptText(
+    "05 OUT Mercado Livre R$ 120,00\n06 OUT Pagamento recebido -R$ 500,00",
+    now,
+  );
+  assert.notEqual(fatura.method, "entrada");
+  assert.equal(fatura.items.length, 1);
+  assert.equal(fatura.items[0].totalCents, 12000);
+});
