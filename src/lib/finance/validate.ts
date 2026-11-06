@@ -193,8 +193,8 @@ function profilePatch(value: unknown): Partial<Profile> {
 
 export function applyProfilePatch(current: Profile, patch: Partial<Profile>): Profile {
   const next: Profile = {
-    legalName: "",
-    cpfHint: "",
+// already inherited from current profile
+    // already inherited from current profile
     ...current,
     ...patch,
   };
