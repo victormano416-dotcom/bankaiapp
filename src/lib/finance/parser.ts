@@ -127,7 +127,11 @@ function pickPerson(raw: string, incoming: boolean): Person | null {
     const to =
       l.match(/^(?:para|favorecido|destinat[aá]rio|recebedor|quem recebeu|nome do favorecido|benefici[aá]rio)\s*[:-]\s*(.+)$/i) ??
       l.match(/^[Pp]ara\s+([A-ZÀ-Ú][^\n]{2,})$/);
-    for (const [m, role] of [[store, "store"], [from, "from"], [to, "to"]] as const) {
+    for (const [m, role] of [
+      [store, "store"],
+      [from, "from"],
+      [to, "to"],
+    ] as const) {
       const name = m ? cleanName(m[1]) : "";
       if (name) found.push({ name, role });
     }
@@ -149,11 +153,33 @@ function kindWord(raw: string): string | null {
 }
 
 const GENERIC =
-  /^(valor|total|lancamento|data|horario|banco|conta|comprovante.*|compra (aprovada|realizada|no\b.*|na\b.*)|pagamento.*|transferencia.*|pix.*|ted.*|doc.*|voce .*|recebid.*|enviad.*|cartao.*|credito|debito)$/;
+  /^(valor|total|subtotal|lancamento|data|horario|hora|banco|conta|agencia|comprovante.*|compra (aprovada|realizada|no\b.*|na\b.*)|pagamento.*|transferencia.*|pix.*|ted.*|doc.*|voce .*|recebid.*|enviad.*|cartao.*|credito|debito|outros?|opcional)$/;
 
 function isGeneric(description: string): boolean {
   const d = fold(description).trim();
   return d.length < 3 || GENERIC.test(d);
+}
+
+/** Linha de metadado do comprovante (CNPJ, CPF, NSU…) — não é gasto. */
+function isNoiseLine(line: string): boolean {
+  const t = fold(line);
+  if (/\b(cnpj|cpf|c\.?n\.?p\.?j\.?|c\.?p\.?f\.?)\b/.test(t)) return true;
+  if (/^(ag[eê]ncia|agencia|conta|banco|nsu|auth|autenticacao|protocolo|end to end|id da trans)/.test(t)) {
+    return true;
+  }
+  if (/\binscricao\s+estadual\b|\bie\b/.test(t) && (t.match(/\p{L}/gu) ?? []).length < 12) return true;
+  return false;
+}
+
+/** Descrição inútil depois do OCR (só "Valor", só números, pedaço de CNPJ). */
+function isNoiseDesc(description: string): boolean {
+  const d = fold(description).trim();
+  if (!d || isGeneric(d)) return true;
+  if (/\b(cnpj|cpf)\b/.test(d)) return true;
+  if (/^[\d\s./\-]+$/.test(d)) return true;
+  const letters = (d.match(/\p{L}/gu) ?? []).length;
+  if (letters < 3) return true;
+  return false;
 }
 
 function describe(raw: string, incoming: boolean, person: Person | null): string | null {
@@ -186,8 +212,12 @@ function describe(raw: string, incoming: boolean, person: Person | null): string
 
 function polish(item: ParsedItem, raw: string, incoming: boolean, person: Person | null): ParsedItem {
   const label = describe(raw, incoming, person);
-  if (!label || !(incoming || isGeneric(item.description))) return item;
-  return { ...item, description: label.slice(0, 160), category: guessCategory(`${label} ${item.merchant ?? ""}`) };
+  if (!label || !(incoming || isGeneric(item.description) || isNoiseDesc(item.description))) return item;
+  return {
+    ...item,
+    description: label.slice(0, 160),
+    category: guessCategory(`${label} ${item.merchant ?? ""}`),
+  };
 }
 
 function detectMethod(text: string): PayMethod | null {
@@ -203,7 +233,7 @@ function detectMerchant(text: string): string | null {
   const labeled = text.match(/estabelecimento\s*[:-]\s*(.+)/i);
   if (!labeled?.[1]) return null;
   const name = cleanDesc(labeled[1].split("\n")[0]);
-  return name || null;
+  return name && !isNoiseDesc(name) ? name : null;
 }
 
 function cleanDesc(raw: string): string {
@@ -215,6 +245,7 @@ function cleanDesc(raw: string): string {
     .replace(/\b\d{1,2}\s+(?:jan|fev|mar|abr|mai|jun|jul|ago|set|out|nov|dez)[a-zç]*\b/gi, " ")
     .replace(/\bcompra\s+(?:aprovada|realizada|n[oa])\b/gi, " ")
     .replace(/\b(cr[eé]dito|d[eé]bito|pix|dinheiro|visa|master|elo)\b/gi, " ")
+    .replace(/\b(?:cnpj|cpf)\s*[\d./\-]*/gi, " ")
     .replace(/\s+/g, " ")
     .replace(/^[\s\-–—:|.*]+|[\s\-–—:|.*]+$/g, "")
     .trim();
@@ -300,6 +331,7 @@ function parseCharges(raw: string, now: Date, merchant: string | null, skipIncom
     const trimmed = line.trim();
     if (!trimmed) continue;
     if (/^(total|subtotal|soma|saldo|limite|encargos|anuidade|iof)\b/i.test(trimmed)) continue;
+    if (isNoiseLine(trimmed)) continue;
     if (skipIncoming && lineIsIncoming(trimmed)) continue;
     const amount = lineAmount(trimmed);
     if (amount === null || amount <= 0) continue;
@@ -317,7 +349,12 @@ function parseCharges(raw: string, now: Date, merchant: string | null, skipIncom
       total = amount * parcel.count;
       if (parcel.current > 1) start = addMonths(start, -(parcel.current - 1));
     }
-    const description = (cleanDesc(trimmed) || merchant || "Lançamento").slice(0, 160);
+    let description = cleanDesc(trimmed);
+    if (isNoiseDesc(description)) {
+      if (merchant) description = merchant;
+      else continue;
+    }
+    description = (description || merchant || "Lançamento").slice(0, 160);
     items.push({
       description,
       merchant,
@@ -331,6 +368,7 @@ function parseCharges(raw: string, now: Date, merchant: string | null, skipIncom
   }
   const seen = new Set<string>();
   return items.filter((item) => {
+    if (isNoiseDesc(item.description) && !item.merchant) return false;
     const key = `${item.description}|${item.totalCents}|${item.year}-${item.month}-${item.day}`;
     if (seen.has(key)) return false;
     seen.add(key);
@@ -376,8 +414,9 @@ function singleItem(
         .split("\n")
         .map((l) => l.trim())
         .find((l) => {
+          if (isNoiseLine(l)) return false;
           const d = cleanDesc(l);
-          return d.length > 2 && !/^(total|subtotal|data|valor)\b/i.test(d) && !isGeneric(d);
+          return d.length > 2 && !/^(total|subtotal|data|valor)\b/i.test(d) && !isGeneric(d) && !isNoiseDesc(d);
         }) ?? "",
     ) ||
     charges[0]?.description ||
@@ -414,6 +453,11 @@ export function parseReceiptText(text: string, now = new Date()): ParseOutcome {
     items = charges;
   } else {
     const item = charges[0] ?? singleItem(raw, now, merchant, plan, charges);
+    items = item ? [item] : [];
+  }
+  // Se o OCR só gerou lixo, tenta um único lançamento com o maior valor do texto.
+  if (items.length === 0) {
+    const item = singleItem(raw, now, merchant, plan, []);
     items = item ? [item] : [];
   }
   if (items.length === 1) items = [polish(items[0], raw, incoming, person)];

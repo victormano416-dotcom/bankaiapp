@@ -52,3 +52,35 @@ test("parcela 3/10 starts two months before the slip", () => {
   assert.equal(parsed.items[0].month, 8);
   assert.equal(parsed.items[0].day, 15);
 });
+
+test("ignora CNPJ e linha genérica Valor no OCR do extrato", () => {
+  const text = `
+Comprovante PIX
+Valor R$ 80,75
+CNPJ 0/0001-58 R$ 6,12
+Outros
+`;
+  const parsed = parseReceiptText(text, new Date(2026, 10, 6));
+  assert.equal(
+    parsed.items.some((item) => /cnpj/i.test(item.description)),
+    false,
+  );
+  assert.equal(
+    parsed.items.some((item) => foldDesc(item.description) === "valor"),
+    false,
+  );
+  assert.ok(parsed.items.length >= 1);
+  assert.ok(parsed.items.some((item) => item.totalCents === 8075));
+  assert.equal(
+    parsed.items.some((item) => item.totalCents === 612),
+    false,
+  );
+});
+
+function foldDesc(value: string) {
+  return value
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim();
+}
