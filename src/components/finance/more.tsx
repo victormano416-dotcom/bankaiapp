@@ -19,6 +19,8 @@ export function MoreView() {
   const hidden = bundle.profile.privacyHidden;
   const profile = bundle.profile;
   const [name, setName] = useState(profile.displayName);
+  const [legalName, setLegalName] = useState(profile.legalName ?? "");
+  const [cpfHint, setCpfHint] = useState(profile.cpfHint ?? "");
   const [appName, setAppName] = useState(profile.appName);
   const [purgeOpen, setPurgeOpen] = useState(false);
   const [goalOpen, setGoalOpen] = useState(false);
@@ -26,7 +28,13 @@ export function MoreView() {
   async function saveProfile(extra?: Partial<typeof profile>) {
     await commit({
       op: "profile",
-      profile: { displayName: name.trim(), appName: appName.trim() || "BANKAI", ...extra },
+      profile: {
+        displayName: name.trim(),
+        legalName: legalName.trim(),
+        cpfHint: cpfHint.replace(/\D/g, "").slice(0, 11),
+        appName: appName.trim() || "BANKAI",
+        ...extra,
+      },
     });
   }
 
@@ -62,6 +70,26 @@ export function MoreView() {
         <Field label="Nome">
           <input className={fieldClass} value={name} onChange={(event) => setName(event.target.value)} />
         </Field>
+        <Field label="Nome completo (como no Pix)">
+          <input
+            className={fieldClass}
+            placeholder="Ex.: Victor Mano da Silva"
+            value={legalName}
+            onChange={(event) => setLegalName(event.target.value)}
+          />
+        </Field>
+        <Field label="CPF (só números, pode ser parcial)">
+          <input
+            className={fieldClass}
+            inputMode="numeric"
+            placeholder="Últimos dígitos ou CPF completo"
+            value={cpfHint}
+            onChange={(event) => setCpfHint(event.target.value.replace(/\D/g, "").slice(0, 11))}
+          />
+        </Field>
+        <p className="text-xs text-muted">
+          O nome completo e o CPF ajudam o app a saber se o comprovante é dinheiro que você recebeu ou que você enviou.
+        </p>
         <Field label="Nome do app">
           <input className={fieldClass} value={appName} onChange={(event) => setAppName(event.target.value)} />
         </Field>
@@ -72,7 +100,15 @@ export function MoreView() {
           <select
             className={fieldClass}
             value={profile.monthStartDay}
-            onChange={(event) => void saveProfile({ monthStartDay: Number(event.target.value), displayName: name, appName })}
+            onChange={(event) =>
+              void saveProfile({
+                monthStartDay: Number(event.target.value),
+                displayName: name,
+                legalName,
+                cpfHint,
+                appName,
+              })
+            }
           >
             {Array.from({ length: 28 }, (_, index) => (
               <option key={index + 1} value={index + 1}>
