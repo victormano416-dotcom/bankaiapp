@@ -53,11 +53,13 @@ export function QuickAdd() {
   const [draft, setDraft] = useState<Draft>(() => emptyDraft(quick?.method, ym.year, ym.month));
   const [paste, setPaste] = useState("");
   const [error, setError] = useState("");
+  const [requiresMethodConfirmation, setRequiresMethodConfirmation] = useState(false);
 
   useEffect(() => {
     setDraft(emptyDraft(quick?.method, ym.year, ym.month));
     setPhase("form");
     setError("");
+    setRequiresMethodConfirmation(false);
     setPaste("");
     if (quick?.text) applyText(quick.text);
     if (quick?.image) void readImage(quick.image);
@@ -95,7 +97,12 @@ export function QuickAdd() {
       cardId: card ?? prev.cardId,
     }));
     setPhase("form");
-    setError("");
+    setRequiresMethodConfirmation(parsed.method === null);
+    setError(
+      parsed.method === null
+        ? "Não consegui identificar se é entrada, gasto ou compra no crédito. Confirme o tipo antes de salvar."
+        : "",
+    );
   }
 
   async function readImage(file: File) {
@@ -122,6 +129,11 @@ export function QuickAdd() {
   }
 
   async function submitForm() {
+    if (requiresMethodConfirmation) {
+      setError("Escolha Entrada, Débito, Crédito, PIX ou Dinheiro antes de salvar.");
+      return;
+    }
+
     const total = centsFromText(draft.digits);
     if (total <= 0) {
       setError("Informe um valor válido.");
@@ -232,7 +244,11 @@ export function QuickAdd() {
                 className={`h-9 rounded-full px-3 text-xs ring-1 ${
                   draft.method === m.id ? "bg-accent text-accent-fg ring-accent" : "ring-line text-muted"
                 }`}
-                onClick={() => setDraft((p) => ({ ...p, method: m.id }))}
+                onClick={() => {
+  setDraft((p) => ({ ...p, method: m.id }));
+  setRequiresMethodConfirmation(false);
+  setError("");
+}}
               >
                 {m.label}
               </button>
