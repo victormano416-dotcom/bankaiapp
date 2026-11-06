@@ -197,7 +197,7 @@ export function QuickAdd() {
 
     const saved = await commit({ op: "launch", items, newCard });
     if (saved) {
-      if (quick.inboxId) markInboxLaunched(quick.inboxId);
+      if (quick && quick.inboxId) markInboxLaunched(quick.inboxId);
       closeQuick();
     } else {
       setError("Não foi possível salvar.");
