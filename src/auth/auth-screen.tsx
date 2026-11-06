@@ -89,27 +89,38 @@ export function AuthScreen({ recovery = false }: { recovery?: boolean }) {
       <p className="mt-3 text-sm text-muted">Entradas, gastos e a fatura do cartão no mesmo lugar.</p>
       <form onSubmit={submit} className="mt-8 space-y-3" noValidate>
         {mode === "up" ? (
-          <input className={inputClass} placeholder="Seu nome" autoComplete="name" value={name} onChange={(e) => setName(e.target.value)} />
+          <>
+            <label htmlFor="auth-name" className="sr-only">Seu nome</label>
+            <input id="auth-name" className={inputClass} placeholder="Seu nome" autoComplete="name" value={name} onChange={(e) => setName(e.target.value)} />
+          </>
         ) : null}
         {mode !== "reset" ? (
-          <input
-            className={inputClass}
-            placeholder="E-mail"
-            type="email"
-            autoComplete="email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-          />
+          <>
+            <label htmlFor="auth-email" className="sr-only">E-mail</label>
+            <input
+              id="auth-email"
+              className={inputClass}
+              placeholder="E-mail"
+              type="email"
+              autoComplete="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+            />
+          </>
         ) : null}
         {mode !== "forgot" ? (
-          <input
-            className={inputClass}
-            placeholder={mode === "reset" ? "Nova senha (mínimo 8 caracteres)" : "Senha (mínimo 8 caracteres)"}
-            type="password"
-            autoComplete={mode === "in" ? "current-password" : "new-password"}
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-          />
+          <>
+            <label htmlFor="auth-password" className="sr-only">{mode === "reset" ? "Nova senha (mínimo 8 caracteres)" : "Senha (mínimo 8 caracteres)"}</label>
+            <input
+              id="auth-password"
+              className={inputClass}
+              placeholder={mode === "reset" ? "Nova senha (mínimo 8 caracteres)" : "Senha (mínimo 8 caracteres)"}
+              type="password"
+              autoComplete={mode === "in" ? "current-password" : "new-password"}
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+            />
+          </>
         ) : null}
         {error ? (
           <p className="text-sm text-danger" role="alert">

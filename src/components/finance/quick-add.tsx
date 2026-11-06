@@ -56,6 +56,7 @@ export function QuickAdd() {
   const [rows, setRows] = useState<Row[]>([]);
   const [paste, setPaste] = useState("");
   const [error, setError] = useState("");
+  const [reviewImported, setReviewImported] = useState(false);
 
   useEffect(() => {
     setDraft(emptyDraft(quick, ym.year, ym.month));
@@ -63,6 +64,7 @@ export function QuickAdd() {
     setRows([]);
     setError("");
     setPaste("");
+    setReviewImported(false);
     if (quick?.text) applyText(quick.text);
     if (quick?.image) void readImage(quick.image);
     // Only when the sheet opens.
@@ -127,11 +129,13 @@ export function QuickAdd() {
         cardId: card ?? prev.cardId,
       }));
       setPhase("statement");
+      setReviewImported(true);
       setError("");
       return;
     }
     const item = parsed.items[0];
     if (!item) {
+      setReviewImported(false);
       setError("Não encontrei um valor. Tente outra foto ou digite.");
       setPhase("form");
       return;
@@ -150,11 +154,13 @@ export function QuickAdd() {
       cardId: card ?? prev.cardId,
     }));
     setPhase("form");
+    setReviewImported(true);
     setError("");
   }
 
   async function readImage(file: File) {
     setPhase("reading");
+    setReviewImported(false);
     setError("");
     try {
       const ai = await readReceiptWithAI(file);
@@ -306,11 +312,12 @@ export function QuickAdd() {
   }
 
   const monthValue = `${draft.year}-${String(draft.month).padStart(2, "0")}`;
+  const selectedRows = rows.filter((row) => row.checked).length;
 
   return (
     <Modal title={phase === "statement" ? "Extrato" : "Lançar"} onClose={closeQuick}>
       {phase === "reading" ? (
-        <p className="py-10 text-center text-sm text-muted">Lendo o comprovante…</p>
+        <p className="py-10 text-center text-sm text-muted" role="status" aria-live="polite">Lendo o comprovante…</p>
       ) : null}
 
       {phase === "paste" ? (
@@ -318,6 +325,7 @@ export function QuickAdd() {
           <textarea
             className={`${fieldClass} h-40 py-3`}
             placeholder="Cole o texto do extrato"
+            aria-label="Texto do extrato"
             value={paste}
             onChange={(event) => setPaste(event.target.value)}
           />
@@ -329,11 +337,15 @@ export function QuickAdd() {
 
       {phase === "statement" ? (
         <div className="space-y-4">
+          <p className="rounded-2xl bg-surface-2 p-3 text-sm text-muted" role="status">
+            Confira os dados reconhecidos, edite o que estiver incorreto e desmarque as linhas que não quiser lançar. Nada será salvo até você tocar em “Lançar selecionados”.
+          </p>
           <div className="flex gap-2 overflow-x-auto">
             {METHODS.filter((item) => item.id !== "entrada").map((item) => (
               <button
                 key={item.id}
                 type="button"
+                aria-pressed={draft.method === item.id}
                 onClick={() => setDraft({ ...draft, method: item.id })}
                 className={`h-10 shrink-0 rounded-full px-4 text-sm ring-1 ${draft.method === item.id ? "bg-accent text-accent-fg ring-accent" : "ring-line"}`}
               >
@@ -342,43 +354,84 @@ export function QuickAdd() {
             ))}
           </div>
           {draft.method === "credito" ? <CardPicker draft={draft} setDraft={setDraft} /> : null}
-          <ul className="space-y-2">
+          <ul className="space-y-3" aria-label="Lançamentos reconhecidos">
             {rows.map((row) => (
-              <li key={row.key} className="flex items-center gap-3 rounded-2xl px-3 py-3 ring-1 ring-line">
-                <input
-                  type="checkbox"
-                  className="size-5 accent-current"
-                  checked={row.checked}
-                  onChange={() =>
-                    setRows(rows.map((item) => (item.key === row.key ? { ...item, checked: !item.checked } : item)))
-                  }
-                  aria-label={row.description}
-                />
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm">{row.description}</p>
-                  <p className="text-xs text-muted">
-                    {row.category}
-                    {row.installments > 1 ? ` · ${row.installments}x` : ""}
-                  </p>
+              <li key={row.key} className="space-y-3 rounded-2xl p-3 ring-1 ring-line">
+                <label className="flex items-center gap-3 text-sm">
+                  <input
+                    type="checkbox"
+                    className="size-5 accent-current"
+                    checked={row.checked}
+                    onChange={() => setRows(rows.map((item) => (item.key === row.key ? { ...item, checked: !item.checked } : item)))}
+                    aria-label={`Incluir lançamento: ${row.description}`}
+                  />
+                  <span>Incluir este lançamento</span>
+                </label>
+                <label className="block text-xs text-muted">
+                  Descrição
+                  <input
+                    className={`${fieldClass} mt-1`}
+                    value={row.description}
+                    aria-label={`Descrição do lançamento ${row.description}`}
+                    onChange={(event) => setRows(rows.map((item) => item.key === row.key ? { ...item, description: event.target.value } : item))}
+                  />
+                </label>
+                <div className="grid grid-cols-2 gap-3">
+                  <label className="block text-xs text-muted">
+                    Valor total
+                    <input
+                      className={`${fieldClass} mt-1`}
+                      inputMode="numeric"
+                      value={brl(row.totalCents)}
+                      aria-label={`Valor total do lançamento ${row.description}`}
+                      onChange={(event) => {
+                        const digits = event.target.value.replace(/\D/g, "");
+                        setRows(rows.map((item) => item.key === row.key ? { ...item, totalCents: centsFromText(digits) } : item));
+                      }}
+                    />
+                  </label>
+                  <label className="block text-xs text-muted">
+                    Categoria
+                    <select
+                      className={`${fieldClass} mt-1`}
+                      value={row.category}
+                      aria-label={`Categoria do lançamento ${row.description}`}
+                      onChange={(event) => setRows(rows.map((item) => item.key === row.key ? { ...item, category: event.target.value } : item))}
+                    >
+                      {CATEGORIES.map((category) => <option key={category}>{category}</option>)}
+                    </select>
+                  </label>
                 </div>
-                <span className="text-sm tabular-nums">{brl(row.installments > 1 ? Math.round(row.totalCents / row.installments) : row.totalCents)}</span>
+                <p className="text-xs text-muted">
+                  Data: {row.day ? `${String(row.day).padStart(2, "0")}/` : ""}{String(row.month).padStart(2, "0")}/{row.year}
+                  {row.installments > 1 ? ` · ${row.installments} parcelas` : " · À vista"}
+                </p>
               </li>
             ))}
           </ul>
-          {error ? <p className="text-sm text-danger">{error}</p> : null}
+          <p className="text-sm text-muted" aria-live="polite">
+            {selectedRows} de {rows.length} lançamento(s) selecionado(s).
+          </p>
+          {error ? <p className="text-sm text-danger" role="alert">{error}</p> : null}
           <Button className="w-full" disabled={busy} onClick={() => void submitRows()}>
-            Lançar marcados
+            {busy ? "Salvando…" : "Lançar selecionados"}
           </Button>
         </div>
       ) : null}
 
       {phase === "form" ? (
         <div className="space-y-5">
+          {reviewImported ? (
+            <p className="rounded-2xl bg-surface-2 p-3 text-sm text-muted" role="status">
+              Confira os dados reconhecidos abaixo. Você pode editá-los; nada será salvo até tocar em “Lançar”.
+            </p>
+          ) : null}
           <div className="flex gap-2 overflow-x-auto pb-1">
             {METHODS.map((item) => (
               <button
                 key={item.id}
                 type="button"
+                aria-pressed={draft.method === item.id}
                 onClick={() => setDraft({ ...draft, method: item.id })}
                 className={`h-10 shrink-0 rounded-full px-4 text-sm ring-1 transition ${draft.method === item.id ? "bg-accent text-accent-fg ring-accent" : "ring-line"}`}
               >
@@ -417,6 +470,7 @@ export function QuickAdd() {
             <span className="sr-only">Valor</span>
             <input
               inputMode="numeric"
+              aria-label="Valor do lançamento em reais"
               className="w-full bg-transparent text-center text-5xl font-medium tracking-tight tabular-nums outline-none"
               placeholder="R$ 0,00"
               value={draft.digits ? brl(centsFromText(draft.digits)) : ""}
@@ -438,22 +492,14 @@ export function QuickAdd() {
                 onChange={(event) => setDraft({ ...draft, incomeKind: event.target.value as Draft["incomeKind"] })}
               >
                 {INCOME_KINDS.map((kind) => (
-                  <option key={kind.id} value={kind.id}>
-                    {kind.label}
-                  </option>
+                  <option key={kind.id} value={kind.id}>{kind.label}</option>
                 ))}
               </select>
             </Field>
           ) : (
             <Field label="Categoria">
-              <select
-                className={fieldClass}
-                value={draft.category}
-                onChange={(event) => setDraft({ ...draft, category: event.target.value })}
-              >
-                {CATEGORIES.map((category) => (
-                  <option key={category}>{category}</option>
-                ))}
+              <select className={fieldClass} value={draft.category} onChange={(event) => setDraft({ ...draft, category: event.target.value })}>
+                {CATEGORIES.map((category) => <option key={category}>{category}</option>)}
               </select>
             </Field>
           )}
@@ -479,6 +525,7 @@ export function QuickAdd() {
             <div className="flex gap-2">
               <button
                 type="button"
+                aria-pressed={draft.fixed}
                 onClick={() => setDraft({ ...draft, fixed: !draft.fixed, recurring: !draft.fixed || draft.recurring })}
                 className={`h-10 rounded-full px-4 text-sm ring-1 ${draft.fixed ? "bg-accent text-accent-fg ring-accent" : "ring-line"}`}
               >
@@ -486,6 +533,7 @@ export function QuickAdd() {
               </button>
               <button
                 type="button"
+                aria-pressed={draft.recurring}
                 onClick={() => setDraft({ ...draft, recurring: !draft.recurring })}
                 className={`h-10 rounded-full px-4 text-sm ring-1 ${draft.recurring ? "bg-accent text-accent-fg ring-accent" : "ring-line"}`}
               >
@@ -496,6 +544,7 @@ export function QuickAdd() {
           {draft.method === "entrada" ? (
             <button
               type="button"
+              aria-pressed={draft.recurring}
               onClick={() => setDraft({ ...draft, recurring: !draft.recurring })}
               className={`h-10 rounded-full px-4 text-sm ring-1 ${draft.recurring ? "bg-accent text-accent-fg ring-accent" : "ring-line"}`}
             >
@@ -525,16 +574,18 @@ export function QuickAdd() {
             </Field>
           </div>
           <div className="flex gap-2">
-            <label className="flex h-11 flex-1 items-center justify-center rounded-full text-sm ring-1 ring-line">
+            <label className="flex h-11 flex-1 cursor-pointer items-center justify-center rounded-full text-sm ring-1 ring-line">
               Foto
               <input
                 type="file"
                 accept="image/*"
                 capture="environment"
                 className="sr-only"
+                aria-label="Selecionar ou tirar foto do comprovante"
                 onChange={(event) => {
                   const file = event.target.files?.[0];
                   if (file) void readImage(file);
+                  event.currentTarget.value = "";
                 }}
               />
             </label>
@@ -542,7 +593,7 @@ export function QuickAdd() {
               Colar extrato
             </button>
           </div>
-          {error ? <p className="text-sm text-danger">{error}</p> : null}
+          {error ? <p className="text-sm text-danger" role="alert">{error}</p> : null}
           <Button className="w-full" disabled={busy} onClick={() => void submitForm()}>
             {busy ? "Salvando…" : "Lançar"}
           </Button>
@@ -560,21 +611,18 @@ function CardPicker({ draft, setDraft }: { draft: Draft; setDraft: (draft: Draft
         <Field label="Cartão">
           <select className={fieldClass} value={draft.cardId} onChange={(event) => setDraft({ ...draft, cardId: event.target.value })}>
             <option value="">Novo cartão</option>
-            {bundle.cards.map((card) => (
-              <option key={card.id} value={card.id}>
-                {card.name}
-              </option>
-            ))}
+            {bundle.cards.map((card) => <option key={card.id} value={card.id}>{card.name}</option>)}
           </select>
         </Field>
       ) : null}
       {!draft.cardId || !bundle.cards.length ? (
         <div className="grid grid-cols-3 gap-2">
-          <input className={fieldClass} placeholder="Nome" value={draft.newCardName} onChange={(event) => setDraft({ ...draft, newCardName: event.target.value })} />
+          <input className={fieldClass} placeholder="Nome" aria-label="Nome do novo cartão" value={draft.newCardName} onChange={(event) => setDraft({ ...draft, newCardName: event.target.value })} />
           <input
             className={fieldClass}
             inputMode="numeric"
             placeholder="Limite"
+            aria-label="Limite do novo cartão em reais"
             value={draft.newCardLimit ? brl(centsFromText(draft.newCardLimit)) : ""}
             onChange={(event) => setDraft({ ...draft, newCardLimit: event.target.value.replace(/\D/g, "").slice(0, 11) })}
           />
@@ -582,6 +630,7 @@ function CardPicker({ draft, setDraft }: { draft: Draft; setDraft: (draft: Draft
             className={fieldClass}
             inputMode="numeric"
             placeholder="Vence"
+            aria-label="Dia de vencimento da fatura"
             value={draft.newCardDue}
             onChange={(event) => setDraft({ ...draft, newCardDue: event.target.value.replace(/\D/g, "").slice(0, 2) })}
           />
