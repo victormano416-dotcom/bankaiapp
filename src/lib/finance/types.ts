@@ -38,6 +38,10 @@ export type PayMethod = (typeof METHODS)[number]["id"];
 
 export type Profile = {
   displayName: string;
+  /** Nome completo como aparece no Pix/TED (para o leitor saber se você enviou ou recebeu). */
+  legalName: string;
+  /** Só dígitos do CPF (4 a 11). Usado só no aparelho para bater com o comprovante. */
+  cpfHint: string;
   avatar: string | null;
   appName: string;
   theme: ThemeId;

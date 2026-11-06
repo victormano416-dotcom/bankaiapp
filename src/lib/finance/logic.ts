@@ -6,6 +6,8 @@ import { applyProfilePatch, type Mutation } from "./validate";
 
 const BASE_PROFILE: Profile = {
   displayName: "",
+  legalName: "",
+  cpfHint: "",
   avatar: null,
   appName: "BANKAI",
   theme: "obsidian",
