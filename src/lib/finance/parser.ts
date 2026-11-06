@@ -73,6 +73,12 @@ const fold = (value: string) =>
 
 const INCOMING = [
   /\bvoce recebeu\b/,
+  /\brecebemos\b/,
+  /\brecebimento\s+(?:de|via|por|no|em)\b/,
+  /\bpagamento recebido\b/,
+  /\bcredito recebido\b/,
+  /\b(?:recebido|recebida)\s+(?:por|via|no|pelo|pela)\s+(?:cartao|credito)\b/,
+  /\bvenda(?:s)?\s+(?:aprovada|realizada|confirmada).*\b(?:credito|cartao)\b/,
   /\brecebeu (?:um |uma )?(?:pix|transferencia|ted|doc|deposito)\b/,
   /\b(?:pix|transferencia|ted|doc|deposito) recebid[oa]s?\b/,
   /\bcredito (?:em conta|de salario)\b/,
@@ -508,7 +514,7 @@ export function parseReceiptText(
 
   const byId = directionFromIdentity(raw, identity);
   const incoming =
-    byId === true || (byId === null && isIncoming(raw) && rows.length < 2);
+    byId === true || (byId === null && isIncoming(raw) && rows.length === 0);
   let method: PayMethod | null = incoming ? "entrada" : detectMethod(raw);
   if (byId === false && method === "entrada") method = detectMethod(raw) ?? "pix";
 
