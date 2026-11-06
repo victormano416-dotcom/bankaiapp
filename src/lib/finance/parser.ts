@@ -3,18 +3,8 @@ import { addMonths } from "./period";
 import type { PayMethod } from "./types";
 
 const MONTHS: Record<string, number> = {
-  jan: 1,
-  fev: 2,
-  mar: 3,
-  abr: 4,
-  mai: 5,
-  jun: 6,
-  jul: 7,
-  ago: 8,
-  set: 9,
-  out: 10,
-  nov: 11,
-  dez: 12,
+  jan: 1, fev: 2, mar: 3, abr: 4, mai: 5, jun: 6,
+  jul: 7, ago: 8, set: 9, out: 10, nov: 11, dez: 12,
 };
 
 export type ParsedItem = {
@@ -32,6 +22,12 @@ export type ParseOutcome = {
   method: PayMethod | null;
   merchant: string | null;
   items: ParsedItem[];
+};
+
+/** Quem é você no comprovante — nome(s) e dígitos de CPF salvos no perfil. */
+export type ParseIdentity = {
+  names: string[];
+  cpfDigits?: string;
 };
 
 type FoundDate = { year: number; month: number; day: number };
@@ -68,20 +64,13 @@ export function guessCategory(text: string): string {
     [/renner|zara|riachuelo|roupa|cal[cç]ado|\bnike\b|centauro|shein/, "Roupas"],
     [/cinema|show|ingresso|steam|jogo|spotify/, "Lazer"],
   ];
-  for (const [re, cat] of rules) {
-    if (re.test(t)) return cat;
-  }
+  for (const [re, cat] of rules) if (re.test(t)) return cat;
   return "Outros";
 }
 
 const fold = (value: string) =>
-  value
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "");
+  value.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
 
-// Texto já sem acentos e em minúsculas. "pagamento recebido" fica de fora de propósito:
-// em fatura de cartão significa que VOCÊ pagou a fatura, não que entrou dinheiro.
 const INCOMING = [
   /\bvoce recebeu\b/,
   /\brecebeu (?:um |uma )?(?:pix|transferencia|ted|doc|deposito)\b/,
@@ -98,8 +87,7 @@ const OUTGOING = [
 ];
 
 function lineIsIncoming(line: string): boolean {
-  const t = fold(line);
-  return INCOMING.some((re) => re.test(t));
+  return INCOMING.some((re) => re.test(fold(line)));
 }
 
 function isIncoming(raw: string): boolean {
@@ -118,15 +106,29 @@ function cleanName(value: string): string {
   return /\p{L}{2}/u.test(name) ? name : "";
 }
 
-function pickPerson(raw: string, incoming: boolean): Person | null {
+function nameHits(haystack: string, name: string): boolean {
+  const h = fold(haystack);
+  const n = fold(name).trim();
+  if (n.length < 3) return false;
+  if (h.includes(n)) return true;
+  const parts = n.split(/\s+/).filter((p) => p.length > 2);
+  if (parts.length >= 2 && parts.every((p) => h.includes(p))) return true;
+  if (parts.length >= 2 && h.includes(parts[0]) && h.includes(parts[parts.length - 1])) return true;
+  return false;
+}
+
+function pickAllPersons(raw: string): Person[] {
   const found: Person[] = [];
   for (const line of raw.split("\n")) {
     const l = line.trim();
     const store = l.match(/^(?:estabelecimento|loja|local(?: da compra)?)\s*[:-]\s*(.+)$/i);
-    const from = l.match(/^(?:de|origem|remetente|pagador|enviado por|quem enviou|quem pagou)\s*[:-]\s*(.+)$/i);
+    const from = l.match(
+      /^(?:de|origem|remetente|pagador|enviado por|quem enviou|quem pagou)\s*[:-]\s*(.+)$/i,
+    );
     const to =
-      l.match(/^(?:para|favorecido|destinat[aá]rio|recebedor|quem recebeu|nome do favorecido|benefici[aá]rio)\s*[:-]\s*(.+)$/i) ??
-      l.match(/^[Pp]ara\s+([A-ZÀ-Ú][^\n]{2,})$/);
+      l.match(
+        /^(?:para|favorecido|destinat[aá]rio|recebedor|quem recebeu|nome do favorecido|benefici[aá]rio)\s*[:-]\s*(.+)$/i,
+      ) ?? l.match(/^[Pp]ara\s+([A-ZÀ-Ú][^\n]{2,})$/);
     for (const [m, role] of [
       [store, "store"],
       [from, "from"],
@@ -136,8 +138,53 @@ function pickPerson(raw: string, incoming: boolean): Person | null {
       if (name) found.push({ name, role });
     }
   }
+  return found;
+}
+
+function pickPerson(raw: string, incoming: boolean): Person | null {
+  const found = pickAllPersons(raw);
   if (incoming) return found.find((p) => p.role === "from") ?? null;
   return found.find((p) => p.role === "store") ?? found.find((p) => p.role === "to") ?? null;
+}
+
+/** true = você recebeu; false = você enviou/pagou; null = não deu para saber pelo perfil. */
+function directionFromIdentity(raw: string, identity?: ParseIdentity): boolean | null {
+  if (!identity) return null;
+  const names = identity.names.map((n) => n.trim()).filter((n) => n.length >= 3);
+  const cpf = (identity.cpfDigits ?? "").replace(/\D/g, "");
+  if (!names.length && cpf.length < 4) return null;
+
+  const persons = pickAllPersons(raw);
+  const toMe = persons.some((p) => p.role === "to" && names.some((n) => nameHits(p.name, n)));
+  const fromMe = persons.some((p) => p.role === "from" && names.some((n) => nameHits(p.name, n)));
+
+  if (cpf.length >= 4) {
+    for (const line of raw.split("\n")) {
+      const digits = line.replace(/\D/g, "");
+      if (!digits.includes(cpf)) continue;
+      const t = fold(line);
+      if (/^(para|favorecido|destinat|recebedor|benefici)/.test(t) || /\bpara\b/.test(t)) {
+        if (!fromMe) return true;
+      }
+      if (/^(de|origem|remetente|pagador)/.test(t)) {
+        if (!toMe) return false;
+      }
+    }
+    // CPF aparece no texto e “para” tem seu nome
+    if (toMe) return true;
+    if (fromMe) return false;
+  }
+
+  if (toMe && !fromMe) return true;
+  if (fromMe && !toMe) return false;
+
+  // Nome completo aparece perto de “você recebeu” / “para você”
+  const body = fold(raw);
+  if (names.some((n) => nameHits(body, n))) {
+    if (INCOMING.some((re) => re.test(body))) return true;
+    if (OUTGOING.some((re) => re.test(body))) return false;
+  }
+  return null;
 }
 
 function kindWord(raw: string): string | null {
@@ -160,7 +207,6 @@ function isGeneric(description: string): boolean {
   return d.length < 3 || GENERIC.test(d);
 }
 
-/** Linha de metadado do comprovante (CNPJ, CPF, NSU…) — não é gasto. */
 function isNoiseLine(line: string): boolean {
   const t = fold(line);
   if (/\b(cnpj|cpf|c\.?n\.?p\.?j\.?|c\.?p\.?f\.?)\b/.test(t)) return true;
@@ -171,14 +217,12 @@ function isNoiseLine(line: string): boolean {
   return false;
 }
 
-/** Descrição inútil depois do OCR (só "Valor", só números, pedaço de CNPJ). */
 function isNoiseDesc(description: string): boolean {
   const d = fold(description).trim();
   if (!d || isGeneric(d)) return true;
   if (/\b(cnpj|cpf)\b/.test(d)) return true;
   if (/^[\d\s./\-]+$/.test(d)) return true;
-  const letters = (d.match(/\p{L}/gu) ?? []).length;
-  if (letters < 3) return true;
+  if ((d.match(/\p{L}/gu) ?? []).length < 3) return true;
   return false;
 }
 
@@ -224,7 +268,7 @@ function detectMethod(text: string): PayMethod | null {
   const t = text.toLowerCase();
   if (/\bpix\b/.test(t)) return "pix";
   if (/d[eé]bito/.test(t)) return "debito";
-  if (/cr[eé]dito|cart[aã]o/.test(t)) return "credito";
+  if (/cr[eé]dito|cart[aã]o|compra aprovada|compra realizada/.test(t)) return "credito";
   if (/dinheiro|esp[eé]cie/.test(t)) return "dinheiro";
   return null;
 }
@@ -274,7 +318,6 @@ function findDate(text: string, now: Date): FoundDate | null {
   return null;
 }
 
-/** "10 x de R$ 394,00" — a purchase plan, not a statement row. "Parc 01/1" is ignored. */
 function findPlan(text: string): { count: number; eachCents: number } | null {
   const times = text.match(
     /(\d{1,2})\s*[x×]\s*(?:de\s*)?(?:R\$\s*)?(\d{1,3}(?:\.\d{3})*,\d{2}|\d+,\d{2}|\d+\.\d{2})/i,
@@ -295,13 +338,21 @@ function findParcel(text: string): { current: number; count: number } | null {
   return { current, count };
 }
 
+/** Prioriza rótulos de valor real do comprovante (não IOF, taxa, parcela solta). */
 function findTotal(text: string): number | null {
-  const labeled = text.match(
-    /(?:valor\s+total|total\s+a\s+pagar|total\s+da\s+compra|valor\s+da\s+compra|total)\s*[:-]?\s*(?:R\$\s*)?(\d{1,3}(?:\.\d{3})*,\d{2}|\d+,\d{2}|\d+\.\d{2})/i,
-  );
-  if (!labeled) return null;
-  const cents = moneyTokenToCents(labeled[1]);
-  return cents > 0 ? cents : null;
+  const patterns = [
+    /(?:valor\s+total|total\s+a\s+pagar|total\s+da\s+compra|valor\s+da\s+compra|valor\s+do\s+pix|valor\s+da\s+transfer[eê]ncia|valor\s+recebido|valor\s+enviado|valor)\s*[:-]?\s*(?:R\$\s*)?(\d{1,3}(?:\.\d{3})*,\d{2}|\d+,\d{2}|\d+\.\d{2})/gi,
+    /(?:total)\s*[:-]?\s*(?:R\$\s*)?(\d{1,3}(?:\.\d{3})*,\d{2}|\d+,\d{2}|\d+\.\d{2})/gi,
+  ];
+  const found: number[] = [];
+  for (const re of patterns) {
+    for (const m of text.matchAll(re)) {
+      const cents = moneyTokenToCents(m[1]);
+      if (cents > 0) found.push(cents);
+    }
+  }
+  if (!found.length) return null;
+  return Math.max(...found);
 }
 
 function lineAmount(line: string): number | null {
@@ -405,7 +456,6 @@ function singleItem(
   if (!plan && parcel) {
     installments = parcel.count;
     if (parcel.current > 1) start = addMonths(start, -(parcel.current - 1));
-    if (!labeled) total = (charges[0]?.totalCents ?? total) > total ? total : total;
   }
   const line =
     merchant ||
@@ -433,20 +483,41 @@ function singleItem(
   };
 }
 
-export function parseReceiptText(text: string, now = new Date()): ParseOutcome {
+function looksLikeSingleReceipt(raw: string, charges: ParsedItem[]): boolean {
+  const t = fold(raw);
+  if (/compra (aprovada|realizada)/.test(t)) return true;
+  if (/comprovante/.test(t) && charges.length <= 3) return true;
+  if (findTotal(raw) && charges.length <= 3) return true;
+  return false;
+}
+
+export function parseReceiptText(
+  text: string,
+  now = new Date(),
+  identity?: ParseIdentity,
+): ParseOutcome {
   const raw = text.replace(/\r/g, "").replace(/\u00a0/g, " ").trim();
   if (!raw) return { method: null, merchant: null, items: [] };
   const merchant = detectMerchant(raw);
   const plan = findPlan(raw);
-  // Extrato com várias linhas de gasto: recebimentos no meio não viram gasto e o texto não é "uma entrada".
   const rows = parseCharges(raw, now, merchant, true);
-  const incoming = isIncoming(raw) && rows.length < 2;
-  const method: PayMethod | null = incoming ? "entrada" : detectMethod(raw);
+
+  const byId = directionFromIdentity(raw, identity);
+  const incoming =
+    byId === true || (byId === null && isIncoming(raw) && rows.length < 2);
+  let method: PayMethod | null = incoming ? "entrada" : detectMethod(raw);
+  if (byId === false && method === "entrada") method = detectMethod(raw) ?? "pix";
+
   const person = pickPerson(raw, incoming);
   const charges = incoming ? parseCharges(raw, now, merchant, false) : rows;
 
   let items: ParsedItem[];
-  if (plan && charges.length <= 4) {
+  const forceSingle =
+    (plan && charges.length <= 4) ||
+    (method === "credito" && looksLikeSingleReceipt(raw, charges)) ||
+    (incoming && charges.length <= 2);
+
+  if (forceSingle) {
     const item = singleItem(raw, now, merchant, plan, charges);
     items = item ? [item] : [];
   } else if (charges.length >= 2) {
@@ -455,7 +526,6 @@ export function parseReceiptText(text: string, now = new Date()): ParseOutcome {
     const item = charges[0] ?? singleItem(raw, now, merchant, plan, charges);
     items = item ? [item] : [];
   }
-  // Se o OCR só gerou lixo, tenta um único lançamento com o maior valor do texto.
   if (items.length === 0) {
     const item = singleItem(raw, now, merchant, plan, []);
     items = item ? [item] : [];
