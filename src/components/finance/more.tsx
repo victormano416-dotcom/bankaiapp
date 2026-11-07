@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { signOut } from "@/auth/session";
 import { bundleToCsv, downloadText } from "@/lib/finance/csv";
 import { brl, centsFromText } from "@/lib/finance/money";
@@ -24,18 +24,39 @@ export function MoreView() {
   const [appName, setAppName] = useState(profile.appName);
   const [purgeOpen, setPurgeOpen] = useState(false);
   const [goalOpen, setGoalOpen] = useState(false);
+  const [savedOk, setSavedOk] = useState(false);
+
+  // Mantém os campos iguais ao que está no caixa (após salvar / voltar na aba).
+  useEffect(() => {
+    setName(profile.displayName ?? "");
+    setLegalName(profile.legalName ?? "");
+    setCpfHint(profile.cpfHint ?? "");
+    setAppName(profile.appName ?? "BANKAI");
+  }, [profile.displayName, profile.legalName, profile.cpfHint, profile.appName]);
 
   async function saveProfile(extra?: Partial<typeof profile>) {
-    await commit({
+    const nextLegal = (extra && "legalName" in extra ? String(extra.legalName ?? "") : legalName).trim();
+    const nextCpf = (extra && "cpfHint" in extra ? String(extra.cpfHint ?? "") : cpfHint).replace(/\D/g, "").slice(0, 11);
+    const nextName = (extra && "displayName" in extra ? String(extra.displayName ?? "") : name).trim();
+    const nextApp = (extra && "appName" in extra ? String(extra.appName ?? "") : appName).trim() || "BANKAI";
+    const saved = await commit({
       op: "profile",
       profile: {
-        displayName: name.trim(),
-        legalName: legalName.trim(),
-        cpfHint: cpfHint.replace(/\D/g, "").slice(0, 11),
-        appName: appName.trim() || "BANKAI",
+        displayName: nextName,
+        legalName: nextLegal,
+        cpfHint: nextCpf,
+        appName: nextApp,
         ...extra,
       },
     });
+    if (saved) {
+      setName(saved.profile.displayName ?? nextName);
+      setLegalName(saved.profile.legalName ?? nextLegal);
+      setCpfHint(saved.profile.cpfHint ?? nextCpf);
+      setAppName(saved.profile.appName ?? nextApp);
+      setSavedOk(true);
+      window.setTimeout(() => setSavedOk(false), 2000);
+    }
   }
 
   async function onAvatar(file: File) {
@@ -67,28 +88,28 @@ export function MoreView() {
             <p className="text-sm">{user.email}</p>
           </div>
         </div>
-        <Field label="Nome">
+        <Field label="Como quer ser chamado">
           <input className={fieldClass} value={name} onChange={(event) => setName(event.target.value)} />
         </Field>
-        <Field label="Nome completo (como no Pix)">
+        <Field label="Nome completo no banco">
           <input
             className={fieldClass}
-            placeholder="Ex.: Victor Mano da Silva"
             value={legalName}
             onChange={(event) => setLegalName(event.target.value)}
+            autoComplete="name"
           />
         </Field>
-        <Field label="CPF (só números, pode ser parcial)">
+        <Field label="CPF (só números)">
           <input
             className={fieldClass}
             inputMode="numeric"
-            placeholder="Últimos dígitos ou CPF completo"
             value={cpfHint}
             onChange={(event) => setCpfHint(event.target.value.replace(/\D/g, "").slice(0, 11))}
+            autoComplete="off"
           />
         </Field>
         <p className="text-xs text-muted">
-          O nome completo e o CPF ajudam o app a saber se o comprovante é dinheiro que você recebeu ou que você enviou.
+          Nome completo e CPF são usados só neste aparelho para o leitor de comprovante saber se o Pix/TED é entrada (você recebeu) ou saída (você enviou). Não vão para o banco nem para terceiros.
         </p>
         <Field label="Nome do app">
           <input className={fieldClass} value={appName} onChange={(event) => setAppName(event.target.value)} />
@@ -118,7 +139,7 @@ export function MoreView() {
           </select>
         </Field>
         <Button disabled={busy} onClick={() => void saveProfile()}>
-          Salvar perfil
+          {savedOk ? "Salvo" : busy ? "Salvando…" : "Salvar perfil"}
         </Button>
       </section>
 
@@ -129,76 +150,76 @@ export function MoreView() {
             <button
               key={id}
               type="button"
-              onClick={() => selectTheme(id)}
-              className={`flex items-center gap-3 rounded-2xl px-3 py-3 text-left ring-1 ${profile.theme === id ? "ring-accent" : "ring-line"}`}
+              onClick={() => void selectTheme(id)}
+              className={`flex h-12 items-center justify-between rounded-2xl px-4 text-left ring-1 ${
+                profile.theme === id ? "ring-accent" : "ring-line"
+              }`}
             >
-              <span className={`swatch swatch-${id} size-8 rounded-full ring-1 ring-line`} />
-              <span className="text-sm">{THEME_LABEL[id]}</span>
+              <span>{THEME_LABEL[id]}</span>
+              <span className={`tone-${id} size-6 rounded-full`} />
             </button>
           ))}
         </div>
-        <ToggleRow
-          label="Fundo suave"
+      </section>
+
+      <section className="space-y-3">
+        <h3 className="text-sm text-muted">Preferências</h3>
+        <Toggle
+          label="Ambiente suave"
           checked={profile.ambient}
           onChange={(ambient) => void commit({ op: "profile", profile: { ambient } })}
         />
-        <ToggleRow
-          label="Celebrar meta"
+        <Toggle
+          label="Celebrar metas"
           checked={profile.celebrate}
           onChange={(celebrate) => void commit({ op: "profile", profile: { celebrate } })}
+        />
+        <Toggle
+          label="Ocultar valores"
+          checked={hidden}
+          onChange={() => void commit({ op: "profile", profile: { privacyHidden: !hidden } })}
         />
       </section>
 
       <section className="space-y-3">
-        <div className="flex items-center justify-between">
-          <h3 className="text-sm text-muted">Metas</h3>
-          <button type="button" className="text-sm" onClick={() => setGoalOpen(true)}>
+        <div className="flex items-end justify-between">
+          <h3 className="text-sm text-muted">Metas · {monthTitle(ym)}</h3>
+          <button type="button" className="text-sm text-muted" onClick={() => setGoalOpen(true)}>
             Nova
           </button>
         </div>
-        {bundle.goals.length === 0 ? <p className="text-sm text-muted">Uma meta de cada vez. O progresso é seu.</p> : null}
-        {bundle.goals.map((goal) => (
-          <GoalRow key={goal.id} goal={goal} hidden={hidden} />
-        ))}
+        {bundle.goals.length === 0 ? (
+          <p className="text-sm text-muted">Nenhuma meta ainda.</p>
+        ) : (
+          <ul className="space-y-3">
+            {bundle.goals.map((goal) => (
+              <GoalRow key={goal.id} goal={goal} hidden={hidden} />
+            ))}
+          </ul>
+        )}
       </section>
 
       <section className="space-y-3">
         <h3 className="text-sm text-muted">Dados</h3>
-        <div className="flex flex-wrap gap-2">
-          <Button
-            tone="line"
-            className="h-10"
-            onClick={() => downloadText(`bankai-${ym.year}-${ym.month}.csv`, bundleToCsv(bundle, ym), "text/csv")}
-          >
-            CSV do mês
-          </Button>
-          <Button
-            tone="line"
-            className="h-10"
-            onClick={() => downloadText("bankai.csv", bundleToCsv(bundle), "text/csv")}
-          >
-            CSV completo
-          </Button>
-          <Button
-            tone="line"
-            className="h-10"
-            onClick={() => downloadText("bankai-backup.json", JSON.stringify(bundle, null, 2), "application/json")}
-          >
-            Baixar backup
-          </Button>
-        </div>
-        <label className="flex h-12 items-center justify-center rounded-full text-sm ring-1 ring-line">
-          Importar backup
+        <Button
+          tone="line"
+          className="w-full"
+          onClick={() => downloadText(`bankai-${ym.year}-${ym.month}.csv`, bundleToCsv(bundle, ym))}
+        >
+          Exportar CSV do mês
+        </Button>
+        <label className="block">
+          <span className="mb-2 block text-xs text-muted">Importar backup</span>
           <input
             type="file"
-            accept="application/json"
-            className="sr-only"
+            accept="application/json,.json"
+            className={fieldClass}
             onChange={(event) => {
               const file = event.target.files?.[0];
               if (!file) return;
-              void file.text().then((text) => {
+              void file.text().then((raw) => {
                 try {
-                  const snapshot = JSON.parse(text) as typeof bundle;
+                  const snapshot = JSON.parse(raw);
                   return commit({ op: "import", snapshot });
                 } catch {
                   return null;
@@ -207,36 +228,34 @@ export function MoreView() {
             }}
           />
         </label>
-        <button type="button" className="text-sm text-muted" onClick={() => setPurgeOpen(true)}>
-          Limpar lançamentos encerrados
-        </button>
-      </section>
-
-      <section>
-        <Button tone="line" className="w-full" onClick={() => void signOut()}>
-          Sair da conta
+        <Button tone="line" className="w-full text-danger" onClick={() => setPurgeOpen(true)}>
+          Limpar lançamentos antigos
+        </Button>
+        <Button tone="ghost" className="w-full" onClick={() => void signOut()}>
+          Sair
         </Button>
       </section>
 
       {goalOpen ? <GoalForm onClose={() => setGoalOpen(false)} /> : null}
       {purgeOpen ? (
-        <Modal title="Limpar encerrados" onClose={() => setPurgeOpen(false)}>
-          <p className="text-sm text-muted">Remove parcelas já quitadas e gastos avulsos de meses passados. Recorrentes ficam.</p>
+        <Modal title="Limpar antigos" onClose={() => setPurgeOpen(false)}>
+          <p className="text-sm text-muted">
+            Remove compras já quitadas e gastos não recorrentes de meses anteriores ao atual.
+          </p>
           <Button
             className="mt-5 w-full"
             disabled={busy}
             onClick={() => void commit({ op: "purge" }).then(() => setPurgeOpen(false))}
           >
-            Limpar
+            Confirmar
           </Button>
         </Modal>
       ) : null}
-      <p className="sr-only">{monthTitle(ym)}</p>
     </div>
   );
 }
 
-function ToggleRow({
+function Toggle({
   label,
   checked,
   onChange,
@@ -248,15 +267,11 @@ function ToggleRow({
   return (
     <button
       type="button"
-      role="switch"
-      aria-checked={checked}
+      className="flex h-12 w-full items-center justify-between rounded-2xl px-4 ring-1 ring-line"
       onClick={() => onChange(!checked)}
-      className="flex w-full items-center justify-between py-2 text-left text-sm"
     >
-      {label}
-      <span className={`relative h-6 w-11 rounded-full ring-1 ring-line transition ${checked ? "bg-accent" : "bg-surface-2"}`}>
-        <span className={`absolute top-0.5 size-5 rounded-full transition ${checked ? "left-5 bg-accent-fg" : "left-0.5 bg-muted"}`} />
-      </span>
+      <span className="text-sm">{label}</span>
+      <span className={`size-5 rounded-full ${checked ? "bg-accent" : "bg-line"}`} />
     </button>
   );
 }
@@ -264,51 +279,57 @@ function ToggleRow({
 function GoalRow({ goal, hidden }: { goal: Goal; hidden: boolean }) {
   const { commit, busy } = useFinance();
   const [digits, setDigits] = useState("");
-  const pct = Math.min(100, Math.round((goal.savedCents / Math.max(1, goal.targetCents)) * 100));
-  const extra = centsFromText(digits);
+  const ratio = goal.targetCents > 0 ? Math.min(1, goal.savedCents / goal.targetCents) : 0;
   return (
-    <div className="rounded-2xl p-4 ring-1 ring-line">
-      <div className="flex items-baseline justify-between gap-3">
-        <p className={goal.done ? "text-ok" : ""}>{goal.name}</p>
-        <span className="text-xs text-muted tabular-nums">{hidden ? "••••" : `${pct}%`}</span>
+    <li className="rounded-2xl p-4 ring-1 ring-line">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="font-medium">{goal.name}</p>
+          <p className="text-xs text-muted">
+            <Money cents={goal.savedCents} hidden={hidden} /> de <Money cents={goal.targetCents} hidden={hidden} />
+          </p>
+        </div>
+        {goal.done ? <span className="text-xs text-accent">Feita</span> : null}
       </div>
       <div className="mt-3 h-1 overflow-hidden rounded-full bg-line">
-        <div className="h-full bg-accent transition-all duration-500" style={{ width: `${pct}%` }} />
+        <div className="h-full rounded-full bg-accent" style={{ width: `${Math.round(ratio * 100)}%` }} />
       </div>
-      <p className="mt-2 text-xs text-muted">
-        <Money cents={goal.savedCents} hidden={hidden} /> de <Money cents={goal.targetCents} hidden={hidden} />
-        {goal.done ? " · concluída" : ` · até ${monthTitle({ year: goal.year, month: goal.month })}`}
-      </p>
-      {goal.done ? null : (
+      {!goal.done ? (
         <div className="mt-3 flex gap-2">
           <input
-            className="h-11 min-w-0 flex-1 rounded-full bg-surface-2 px-4 text-sm outline-none ring-1 ring-line"
+            className={fieldClass}
             inputMode="numeric"
             placeholder="Guardar"
-            aria-label={`Guardar em ${goal.name}`}
-            value={digits ? brl(extra) : ""}
+            value={digits ? brl(centsFromText(digits)) : ""}
             onChange={(event) => setDigits(event.target.value.replace(/\D/g, "").slice(0, 11))}
           />
-          <button
-            type="button"
-            disabled={busy || extra <= 0}
-            className="h-11 rounded-full px-4 text-sm ring-1 ring-line disabled:opacity-40"
+          <Button
+            disabled={busy}
             onClick={() => {
+              const add = centsFromText(digits);
+              if (add <= 0) return;
               void commit({
                 op: "save-goal",
                 id: goal.id,
-                data: { ...goal, savedCents: goal.savedCents + extra },
+                data: {
+                  name: goal.name,
+                  targetCents: goal.targetCents,
+                  savedCents: goal.savedCents + add,
+                  year: goal.year,
+                  month: goal.month,
+                  day: goal.day,
+                },
               }).then(() => setDigits(""));
             }}
           >
-            Guardar
-          </button>
+            +
+          </Button>
         </div>
-      )}
+      ) : null}
       <button type="button" className="mt-2 text-xs text-muted" onClick={() => void commit({ op: "delete-goal", id: goal.id })}>
         Excluir
       </button>
-    </div>
+    </li>
   );
 }
 
@@ -317,8 +338,6 @@ function GoalForm({ onClose }: { onClose: () => void }) {
   const [name, setName] = useState("");
   const [digits, setDigits] = useState("");
   const [month, setMonth] = useState(`${ym.year}-${String(ym.month).padStart(2, "0")}`);
-  const [error, setError] = useState("");
-
   return (
     <Modal title="Nova meta" onClose={onClose}>
       <div className="space-y-4">
@@ -336,25 +355,29 @@ function GoalForm({ onClose }: { onClose: () => void }) {
         <Field label="Até">
           <input type="month" className={fieldClass} value={month} onChange={(event) => setMonth(event.target.value)} />
         </Field>
-        {error ? <p className="text-sm text-danger">{error}</p> : null}
         <Button
           className="w-full"
           disabled={busy}
           onClick={() => {
-            const [year, mon] = month.split("-").map(Number);
-            if (!name.trim() || centsFromText(digits) <= 0) {
-              setError("Dê um nome e um valor.");
-              return;
-            }
+            const target = centsFromText(digits);
+            if (!name.trim() || target <= 0) return;
+            const [y, m] = month.split("-").map(Number);
             void commit({
               op: "save-goal",
-              data: { name: name.trim(), targetCents: centsFromText(digits), savedCents: 0, year, month: mon },
+              data: {
+                name: name.trim(),
+                targetCents: target,
+                savedCents: 0,
+                year: y || ym.year,
+                month: m || ym.month,
+                day: null,
+              },
             }).then((saved) => {
               if (saved) onClose();
             });
           }}
         >
-          Criar meta
+          Criar
         </Button>
       </div>
     </Modal>
