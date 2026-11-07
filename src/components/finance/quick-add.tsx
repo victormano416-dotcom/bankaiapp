@@ -67,6 +67,7 @@ export function QuickAdd() {
   }, [quick]);
 
   if (!quick) return null;
+  const seed = quick;
 
   function applyText(text: string) {
     const identity = {
@@ -209,7 +210,7 @@ export function QuickAdd() {
 
     const saved = await commit({ op: "launch", items, newCard });
     if (saved) {
-      if (quick && quick.inboxId) markInboxLaunched(quick.inboxId);
+      if (seed.inboxId) markInboxLaunched(seed.inboxId);
       closeQuick();
     } else {
       setError("Não foi possível salvar.");
@@ -245,10 +246,10 @@ export function QuickAdd() {
                   draft.method === m.id ? "bg-accent text-accent-fg ring-accent" : "ring-line text-muted"
                 }`}
                 onClick={() => {
-  setDraft((p) => ({ ...p, method: m.id }));
-  setRequiresMethodConfirmation(false);
-  setError("");
-}}
+                  setDraft((p) => ({ ...p, method: m.id }));
+                  setRequiresMethodConfirmation(false);
+                  setError("");
+                }}
               >
                 {m.label}
               </button>
