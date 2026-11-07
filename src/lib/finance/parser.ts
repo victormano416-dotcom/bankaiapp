@@ -1,1 +1,544 @@
-PLACEHOLDER_WILL_FAIL
+import { parseBrlNumber } from "./money";
+import { addMonths } from "./period";
+import type { PayMethod } from "./types";
+
+const MONTHS: Record<string, number> = {
+  jan: 1, fev: 2, mar: 3, abr: 4, mai: 5, jun: 6,
+  jul: 7, ago: 8, set: 9, out: 10, nov: 11, dez: 12,
+};
+
+export type ParsedItem = {
+  description: string;
+  merchant: string | null;
+  category: string;
+  totalCents: number;
+  installments: number;
+  year: number;
+  month: number;
+  day: number | null;
+};
+
+export type ParseOutcome = {
+  method: PayMethod | null;
+  merchant: string | null;
+  items: ParsedItem[];
+};
+
+export type ParseIdentity = {
+  names: string[];
+  cpfDigits?: string;
+};
+
+type FoundDate = { year: number; month: number; day: number };
+
+const PAYMENT =
+  /pagamento recebido|pagamento efetuado|pagto\.?\s*(da\s*)?fatura|valor pago|estorno|fatura anterior/i;
+
+function moneyRe() {
+  return /(?:R\$\s*)?(-?\d{1,3}(?:\.\d{3})+,\d{2}|-?\d+,\d{2}|-?\d+\.\d{2})/g;
+}
+
+export function moneyTokenToCents(token: string): number {
+  const negative = /^\s*-/.test(token);
+  const raw = token.trim().replace(/^-/, "").replace(/^R\$\s*/i, "");
+  let cents = 0;
+  if (raw.includes(",")) cents = parseBrlNumber(raw);
+  else {
+    const n = Number(raw);
+    cents = Number.isFinite(n) ? Math.round(n * 100) : 0;
+  }
+  return negative ? -Math.abs(cents) : Math.abs(cents);
+}
+
+export function guessCategory(text: string): string {
+  const t = text.toLowerCase();
+  const rules: [RegExp, string][] = [
+    [/aluguel|condom[ií]nio|iptu|energia|enel|\bluz\b|sabesp|[aá]gua|internet|vivo|claro|tim\b/, "Moradia"],
+    [/mercado|hortifruti|carrefour|assa[ií]|p[aã]o de a[cç][uú]car|supermercado|padaria|a[cç]ougue/, "Mercado"],
+    [/uber|\b99\b|cabify|posto|combust|estaciona|metr[oô]|[oô]nibus|ped[aá]gio|shell|ipiranga/, "Transporte"],
+    [/farm[aá]cia|drogaria|droga\s?raia|hospital|m[eé]dic|odonto|consulta|unimed/, "Saúde"],
+    [/netflix|spotify|prime video|disney|youtube|icloud|assinatura|apple\.com|deezer/, "Assinaturas"],
+    [/curso|escola|faculdade|udemy|alura|livro|mensalidade/, "Educação"],
+    [/ifood|restaurante|\bbar\b|lanche|burger|pizza|caf[eé]|rappi|mcdonald/, "Restaurante"],
+    [/renner|zara|riachuelo|roupa|cal[cç]ado|\bnike\b|centauro|shein/, "Roupas"],
+    [/cinema|show|ingresso|steam|jogo|spotify/, "Lazer"],
+  ];
+  for (const [re, cat] of rules) if (re.test(t)) return cat;
+  return "Outros";
+}
+
+const fold = (value: string) =>
+  value.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+
+const INCOMING = [
+  /\bvoce recebeu\b/,
+  /\bvc recebeu\b/,
+  /\brecebemos\b/,
+  /\brecebimento\b/,
+  /\bcredito recebido\b/,
+  /\brecebid[oa]s?\b/,
+  /\bvenda(?:s)?\s+(?:aprovada|realizada|confirmada)/,
+  /\brecebeu\b/,
+  /\b(?:pix|transferencia|ted|doc|deposito)\s+recebid[oa]s?\b/,
+  /\btransferencia recebida\b/,
+  /\bpix\s+recebido\b/,
+  /\bentrada (?:de|via|por)?\s*(?:pix|ted|transferencia)?\b/,
+  /\bvalor recebido\b/,
+  /\bcredito (?:em conta|de salario|na conta)\b/,
+  /\bdeposito (?:em conta|identificado|recebido)\b/,
+  /\bsalario (?:recebido|creditado)\b/,
+  /\bpagamento recebido\b/,
+  /\bfoi creditado\b/,
+  /\bcaiu na (?:sua )?conta\b/,
+  /\btransferencia\s+(?:para\s+voce|pra voce|para voce)\b/,
+  /\bpara\s+(?:voce|vc)\b/,
+  /\bpra\s+(?:voce|vc)\b/,
+];
+const OUTGOING = [
+  /\b(?:pix|transferencia|ted|doc)\s+(?:enviad[oa]s?|realizad[oa]s?|efetuad[oa]s?)\b/,
+  /\bvoce (?:enviou|pagou|transferiu)\b/,
+  /\benviou (?:um |uma )?(?:pix|transferencia|ted|doc)\b/,
+  /\bcompra (?:aprovada|realizada|no (?:credito|debito))\b/,
+  /\bpagamento (?:de boleto|de conta|efetuado|realizado)\b/,
+  /\bpix\s+enviado\b/,
+  /\btransferencia enviada\b/,
+];
+
+function lineIsIncoming(line: string): boolean {
+  return INCOMING.some((re) => re.test(fold(line)));
+}
+
+function isIncoming(raw: string): boolean {
+  const t = fold(raw);
+  const hasIn = INCOMING.some((re) => re.test(t));
+  if (!hasIn) return false;
+  if (/\bcompra (?:aprovada|realizada|no (?:credito|debito))\b/.test(t)) return false;
+  if (/\bvoce (?:enviou|pagou|transferiu)\b/.test(t)) return false;
+  if (/\b(?:pix|transferencia|ted|doc)\s+enviad[oa]s?\b/.test(t)) return false;
+  if (/\bpagamento (?:efetuado|realizado|de boleto|de conta)\b/.test(t) && !/\bpagamento recebido\b/.test(t))
+    return false;
+  return true;
+}
+
+function isOutgoing(raw: string): boolean {
+  const t = fold(raw);
+  if (/\bvoce (?:enviou|pagou|transferiu)\b/.test(t)) return true;
+  if (/\bvc (?:enviou|pagou|transferiu)\b/.test(t)) return true;
+  if (/\b(?:pix|transferencia|ted|doc)\s+enviad[oa]s?\b/.test(t)) return true;
+  if (/\benviou (?:um |uma )?(?:pix|transferencia|ted|doc)\b/.test(t)) return true;
+  if (/\btransferencia enviada\b/.test(t)) return true;
+  if (/\bcompra (?:aprovada|realizada|no (?:credito|debito))\b/.test(t)) return true;
+  if (/\bpagamento (?:efetuado|realizado|de boleto|de conta)\b/.test(t) && !/\bpagamento recebido\b/.test(t))
+    return true;
+  return false;
+}
+
+type Person = { name: string; role: "from" | "to" | "store" };
+
+function cleanName(value: string): string {
+  const name = cleanDesc(value)
+    .replace(/[\d*.\-/]{5,}/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 60);
+  return /\p{L}{2}/u.test(name) ? name : "";
+}
+
+function nameHits(haystack: string, name: string): boolean {
+  const h = fold(haystack);
+  const n = fold(name).trim();
+  if (n.length < 3) return false;
+  if (h.includes(n)) return true;
+  const parts = n.split(/\s+/).filter((p) => p.length > 2);
+  if (parts.length >= 2 && parts.every((p) => h.includes(p))) return true;
+  if (parts.length >= 2 && h.includes(parts[0]) && h.includes(parts[parts.length - 1])) return true;
+  return false;
+}
+
+function pickAllPersons(raw: string): Person[] {
+  const found: Person[] = [];
+  for (const line of raw.split("\n")) {
+    const l = line.trim();
+    if (!l) continue;
+    const store = l.match(/^(?:estabelecimento|loja|local(?: da compra)?)\s*[:-]\s*(.+)$/i);
+    const from =
+      l.match(
+        /^(?:de|origem|remetente|pagador|enviado por|quem enviou|quem pagou)\s*[:-]?\s*(.+)$/i,
+      ) ?? l.match(/\b(?:enviado por|de)\s+([A-ZÀ-Ú][\p{L}\s.'-]{2,})$/u);
+    const to =
+      l.match(
+        /^(?:para|favorecido|destinat[aá]rio|recebedor|quem recebeu|nome do favorecido|benefici[aá]rio)\s*[:-]?\s*(.+)$/i,
+      ) ??
+      l.match(/^[Pp]ara\s+([A-ZÀ-Ú][^\n]{2,})$/) ??
+      l.match(/\bpara\s+(?:voce|você)\b/i);
+    for (const [m, role] of [
+      [store, "store"],
+      [from, "from"],
+      [to, "to"],
+    ] as const) {
+      if (!m) continue;
+      if (role === "to" && /voce|você/i.test(m[0]) && !m[1]) {
+        found.push({ name: "__self__", role: "to" });
+        continue;
+      }
+      const name = cleanName(m[1] ?? "");
+      if (name) found.push({ name, role });
+    }
+  }
+  return found;
+}
+
+function pickPerson(raw: string, incoming: boolean): Person | null {
+  const found = pickAllPersons(raw);
+  if (incoming) return found.find((p) => p.role === "from") ?? null;
+  return found.find((p) => p.role === "store") ?? found.find((p) => p.role === "to") ?? null;
+}
+
+function directionFromIdentity(raw: string, identity?: ParseIdentity): boolean | null {
+  if (!identity) return null;
+  const names = identity.names.map((n) => n.trim()).filter((n) => n.length >= 3);
+  const cpf = (identity.cpfDigits ?? "").replace(/\D/g, "");
+  if (!names.length && cpf.length < 4) return null;
+
+  const persons = pickAllPersons(raw);
+  const toMe = persons.some(
+    (p) => p.role === "to" && (p.name === "__self__" || names.some((n) => nameHits(p.name, n))),
+  );
+  const fromMe = persons.some((p) => p.role === "from" && names.some((n) => nameHits(p.name, n)));
+
+  if (cpf.length >= 4) {
+    for (const line of raw.split("\n")) {
+      const digits = line.replace(/\D/g, "");
+      if (!digits.includes(cpf)) continue;
+      const t = fold(line);
+      if (/^(para|favorecido|destinat|recebedor|benefici)/.test(t) || /\bpara\b/.test(t)) {
+        if (!fromMe) return true;
+      }
+      if (/^(de|origem|remetente|pagador)/.test(t)) {
+        if (!toMe) return false;
+      }
+    }
+    if (toMe) return true;
+    if (fromMe) return false;
+  }
+
+  if (toMe && !fromMe) return true;
+  if (fromMe && !toMe) return false;
+
+  const body = fold(raw);
+  if (names.some((n) => nameHits(body, n))) {
+    if (INCOMING.some((re) => re.test(body))) return true;
+    if (OUTGOING.some((re) => re.test(body))) return false;
+  }
+  return null;
+}
+
+function kindWord(raw: string): string | null {
+  const t = fold(raw);
+  if (/\bpix\b/.test(t)) return "Pix";
+  if (/\bted\b/.test(t)) return "TED";
+  if (/\bdoc\b/.test(t)) return "DOC";
+  if (/transferencia/.test(t)) return "Transferência";
+  if (/deposito/.test(t)) return "Depósito";
+  if (/boleto/.test(t)) return "Boleto";
+  if (/saque/.test(t)) return "Saque";
+  return null;
+}
+
+function isGeneric(description: string): boolean {
+  const d = fold(description).replace(/[:\-–—]+/g, " ").replace(/\s+/g, " ").trim();
+  if (!d) return true;
+  return /^(valor|outros|pagamento|compra|lancamento|item|pix|transferencia|ted|doc|deposito|comprovante|transacao|total|data|hora|horario|quando|tipo|chave|origem|destino|banco|instituicao|agencia|conta|cpf|cnpj|nome|descricao|identificador|id|auth|autenticacao|nu|nubank|inter|c6|bradesco|itau|bb|caixa)$/.test(d);
+}
+
+function isNoiseLine(line: string): boolean {
+  const t = fold(line);
+  if (!t.trim()) return true;
+  if (/\b(cnpj|cpf)\b/.test(t) && !/\b(nome|para|de)\b/.test(t)) return true;
+  if (/^\s*[\d./\-]+\s*$/.test(line)) return true;
+  if ((t.match(/\p{L}/gu) ?? []).length < 2 && !/\d+,\d{2}/.test(line)) return true;
+  return false;
+}
+
+function isNoiseDesc(description: string): boolean {
+  const d = fold(description).replace(/[:\-–—]+/g, " ").replace(/\s+/g, " ").trim();
+  if (!d || isGeneric(d)) return true;
+  if (/\b(cnpj|cpf)\b/.test(d)) return true;
+  if (/^[\d\s./\-]+$/.test(d)) return true;
+  if ((d.match(/\p{L}/gu) ?? []).length < 3) return true;
+  if (/tipo de transferencia/.test(d)) return true;
+  if (/^chave(\s|\d|$)/.test(d) || (/\bchave\b/.test(d) && d.length < 24)) return true;
+  if (/^comprovante/.test(d)) return true;
+  if (/id (da )?transacao|codigo (de )?autentic/.test(d)) return true;
+  if (/\b(e2e|end to end|txid)\b/.test(d)) return true;
+  if (/institui[cç][aã]o|agencia|conta corrente/.test(d)) return true;
+  return false;
+}
+
+function describe(raw: string, incoming: boolean, person: Person | null): string | null {
+  const kind = kindWord(raw);
+  if (incoming) {
+    const t = fold(raw);
+    const label = /salario/.test(t)
+      ? "Salário"
+      : kind === "TED"
+        ? "TED recebida"
+        : kind === "DOC"
+          ? "DOC recebido"
+          : kind === "Pix"
+            ? "Pix recebido"
+            : kind === "Transferência"
+              ? "Transferência recebida"
+              : kind === "Depósito"
+                ? "Depósito recebido"
+                : "Entrada";
+    if (person?.name && person.name !== "__self__") return `${label} de ${person.name}`;
+    return label;
+  }
+  if (person?.role === "store") return person.name;
+  if (person?.role === "to" && person.name !== "__self__")
+    return kind === "Boleto" ? person.name : `${kind ?? "Pagamento"} para ${person.name}`;
+  if (person?.role === "from" && person.name !== "__self__" && kind)
+    return `${kind} de ${person.name}`;
+  if (kind === "Pix") return isOutgoing(raw) ? "Pix enviado" : "Pix";
+  if (kind === "TED") return isOutgoing(raw) ? "TED enviada" : "TED";
+  if (kind === "Boleto") return "Pagamento de boleto";
+  if (kind === "Transferência") return isOutgoing(raw) ? "Transferência enviada" : "Transferência";
+  if (kind === "Saque") return kind;
+  return null;
+}
+
+function polish(item: ParsedItem, raw: string, incoming: boolean, person: Person | null): ParsedItem {
+  const noisy = isGeneric(item.description) || isNoiseDesc(item.description);
+  const label = describe(raw, incoming, person);
+  if (!label) return item;
+  if (!(incoming || noisy)) return item;
+  return {
+    ...item,
+    description: label.slice(0, 160),
+    category: incoming ? "Outros" : guessCategory(`${label} ${item.merchant ?? ""}`),
+  };
+}
+
+function detectMethod(text: string): PayMethod | null {
+  const t = fold(text);
+  if (isIncoming(text)) return "entrada";
+  if (/compra\s+no\s+debito|\bno\s+debito\b|debito\s+aprovad/.test(t) || (/\bdebito\b/.test(t) && !/\bcredito\b/.test(t) && !/\bpix\b/.test(t)))
+    return "debito";
+  if (/compra\s+no\s+credito|compra\s+aprovada|compra\s+realizada|\bno\s+credito\b/.test(t))
+    return "credito";
+  if (/\bcredito\b|\bcartao\b/.test(t) && !/\bpix\b/.test(t) && !/transferencia/.test(t)) return "credito";
+  if (/dinheiro|especie|em especie/.test(t)) return "dinheiro";
+  if (/\bpix\b|\bted\b|\bdoc\b|transferencia/.test(t)) {
+    if (isOutgoing(text)) return "pix";
+    return null;
+  }
+  return null;
+}
+
+function detectMerchant(text: string): string | null {
+  const labeled = text.match(/estabelecimento\s*[:-]\s*(.+)/i);
+  if (!labeled?.[1]) return null;
+  const name = cleanDesc(labeled[1].split("\n")[0]);
+  return name && !isNoiseDesc(name) ? name : null;
+}
+
+function cleanDesc(raw: string): string {
+  return raw
+    .replace(/\s+/g, " ")
+    .replace(/[|•·]+/g, " ")
+    .trim();
+}
+
+function findDate(text: string, now: Date): FoundDate | null {
+  const iso = text.match(/\b(20\d{2})[-\/](\d{1,2})[-\/](\d{1,2})\b/);
+  if (iso) return { year: Number(iso[1]), month: Number(iso[2]), day: Number(iso[3]) };
+  const br = text.match(/\b(\d{1,2})[\/\-](\d{1,2})[\/\-](20\d{2}|\d{2})\b/);
+  if (br) {
+    let year = Number(br[3]);
+    if (year < 100) year += 2000;
+    return { year, month: Number(br[2]), day: Number(br[1]) };
+  }
+  const named = text.match(/\b(\d{1,2})\s+de\s+([a-zç]{3,9})(?:\s+de)?\s+(20\d{2})/i);
+  if (named) {
+    const mon = MONTHS[fold(named[2]).slice(0, 3)];
+    if (mon) return { year: Number(named[3]), month: mon, day: Number(named[1]) };
+  }
+  return null;
+}
+
+function findPlan(text: string): { count: number; eachCents: number } | null {
+  const m =
+    text.match(/(\d{1,2})\s*x\s*(?:de\s*)?(?:R\$\s*)?(\d{1,3}(?:\.\d{3})*,\d{2}|\d+,\d{2})/i) ??
+    text.match(/(?:parcelado em|em)\s*(\d{1,2})\s*x/i);
+  if (!m) return null;
+  const count = Number(m[1]);
+  if (count < 2 || count > 48) return null;
+  const each = m[2] ? moneyTokenToCents(m[2]) : 0;
+  return { count, eachCents: each };
+}
+
+function findParcel(text: string): { current: number; count: number } | null {
+  const m = text.match(/(\d{1,2})\s*\/\s*(\d{1,2})/);
+  if (!m) return null;
+  const current = Number(m[1]);
+  const count = Number(m[2]);
+  if (current < 1 || count < 2 || current > count || count > 48) return null;
+  return { current, count };
+}
+
+function findTotal(text: string): number | null {
+  const patterns = [
+    /(?:valor\s+(?:total|da\s+compra|do\s+pix|da\s+transferencia|recebido|pago|da\s+transacao)|total\s+geral|total)\s*:?\s*(?:R\$\s*)?(-?\d{1,3}(?:\.\d{3})+,\d{2}|-?\d+,\d{2})/gi,
+    /(?:R\$\s*)(-?\d{1,3}(?:\.\d{3})+,\d{2}|-?\d+,\d{2})/g,
+  ];
+  const found: number[] = [];
+  for (const re of patterns) {
+    for (const m of text.matchAll(re)) {
+      const cents = moneyTokenToCents(m[1] ?? m[0]);
+      if (cents > 0) found.push(cents);
+    }
+  }
+  if (!found.length) return null;
+  return Math.max(...found);
+}
+
+function lineAmount(line: string): number | null {
+  const m = line.match(moneyRe());
+  if (!m?.length) return null;
+  return moneyTokenToCents(m[m.length - 1]);
+}
+
+function fallbackDate(now: Date): FoundDate {
+  return { year: now.getFullYear(), month: now.getMonth() + 1, day: now.getDate() };
+}
+
+function parseCharges(
+  raw: string,
+  now: Date,
+  merchant: string | null,
+  skipIncoming: boolean,
+): ParsedItem[] {
+  const items: ParsedItem[] = [];
+  const date = findDate(raw, now) ?? fallbackDate(now);
+  for (const line of raw.split("\n")) {
+    const l = line.trim();
+    if (!l || isNoiseLine(l)) continue;
+    if (skipIncoming && lineIsIncoming(l)) continue;
+    if (PAYMENT.test(l) && !/recebid/.test(fold(l))) continue;
+    const amount = lineAmount(l);
+    if (amount == null || amount <= 0) continue;
+    const desc = cleanDesc(l.replace(moneyRe(), " ").replace(/R\$/gi, " "));
+    if (isNoiseDesc(desc) && !merchant) continue;
+    items.push({
+      description: (desc || merchant || "Lançamento").slice(0, 160),
+      merchant,
+      category: guessCategory(`${desc} ${merchant ?? ""}`),
+      totalCents: amount,
+      installments: 1,
+      year: date.year,
+      month: date.month,
+      day: date.day,
+    });
+  }
+  return items;
+}
+
+function singleItem(
+  raw: string,
+  now: Date,
+  merchant: string | null,
+  plan: { count: number; eachCents: number } | null,
+  charges: ParsedItem[],
+): ParsedItem | null {
+  const labeled = findTotal(raw);
+  const fromCharges = charges.length ? Math.max(...charges.map((c) => c.totalCents)) : 0;
+  let total = labeled ?? fromCharges;
+  if (!total || total <= 0) return null;
+  const date = findDate(raw, now) ?? fallbackDate(now);
+  const parcel = findParcel(raw);
+  const installments = plan?.count ?? parcel?.count ?? 1;
+  if (plan?.eachCents && plan.eachCents > 0 && installments > 1) {
+    total = plan.eachCents * installments;
+  }
+  const line = charges[0]?.description ?? merchant ?? "Lançamento";
+  const start = parcel && parcel.current > 1 ? addMonths(date, -(parcel.current - 1)) : date;
+  return {
+    description: line.slice(0, 160),
+    merchant,
+    category: guessCategory(`${line} ${merchant ?? ""}`),
+    totalCents: total,
+    installments,
+    year: start.year,
+    month: start.month,
+    day: date.day,
+  };
+}
+
+function looksLikeSingleReceipt(raw: string, charges: ParsedItem[]): boolean {
+  const t = fold(raw);
+  if (/compra (aprovada|realizada)/.test(t)) return true;
+  if (/comprovante/.test(t) && charges.length <= 3) return true;
+  if (findTotal(raw) && charges.length <= 3) return true;
+  return false;
+}
+
+export function parseReceiptText(
+  text: string,
+  now = new Date(),
+  identity?: ParseIdentity,
+): ParseOutcome {
+  const raw = text.replace(/\r/g, "").replace(/\u00a0/g, " ").trim();
+  if (!raw) return { method: null, merchant: null, items: [] };
+  const merchant = detectMerchant(raw);
+  const plan = findPlan(raw);
+  const rows = parseCharges(raw, now, merchant, true);
+
+  const byId = directionFromIdentity(raw, identity);
+  const incoming = byId === true || (byId === null && isIncoming(raw));
+  const outgoing = byId === false || (byId === null && isOutgoing(raw));
+  let method: PayMethod | null = incoming ? "entrada" : detectMethod(raw);
+  if (byId === false) {
+    method = method === "entrada" || method == null ? "pix" : method;
+  }
+  if (incoming) method = "entrada";
+  if (method == null && !outgoing && /\bpix\b|transferencia|\bted\b/i.test(raw)) {
+    method = null;
+  }
+
+  const person = pickPerson(raw, incoming);
+  const charges = incoming ? parseCharges(raw, now, merchant, false) : rows;
+
+  let items: ParsedItem[];
+  const forceSingle =
+    (plan && charges.length <= 4) ||
+    (method === "credito" && looksLikeSingleReceipt(raw, charges)) ||
+    (incoming && charges.length <= 2);
+
+  if (forceSingle) {
+    const item = singleItem(raw, now, merchant, plan, charges);
+    items = item ? [item] : [];
+  } else if (charges.length >= 2) {
+    items = charges;
+  } else {
+    const item = charges[0] ?? singleItem(raw, now, merchant, plan, charges);
+    items = item ? [item] : [];
+  }
+  if (items.length === 0) {
+    const item = singleItem(raw, now, merchant, plan, []);
+    items = item ? [item] : [];
+  }
+  if (items.length === 1) items = [polish(items[0], raw, incoming, person)];
+  return { method, merchant, items };
+}
+
+export function matchCardName(text: string, cards: { id: string; name: string }[]): string | null {
+  const t = text.toLowerCase();
+  let best: { id: string; len: number } | null = null;
+  for (const card of cards) {
+    const name = card.name.trim().toLowerCase();
+    if (name.length < 2) continue;
+    if (t.includes(name) && (!best || name.length > best.len)) best = { id: card.id, len: name.length };
+  }
+  return best?.id ?? null;
+}
