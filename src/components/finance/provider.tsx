@@ -1,21 +1,52 @@
-import {
-  createContext,
-  useCallback,
-  useContext,
-  useEffect,
-  useMemo,
-  useState,
-  type ReactNode,
-} from "react";
-import type { SessionUser } from "@/auth/session";
+import { inboxFile, listInbox, markLaunched } from "@/lib/finance/inbox";
+import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
+import type { AppUser } from "@/auth/session";
 import { loadFinance, mutateFinance } from "@/lib/finance/api";
-import { todayYm } from "@/lib/finance/period";
-import type { Bundle, ThemeId } from "@/lib/finance/types";
+import { todayYm, type Ym } from "@/lib/finance/period";
+import { THEMES, type Bundle, type PayMethod, type ThemeId } from "@/lib/finance/types";
 import type { Mutation } from "@/lib/finance/validate";
-import { listInbox, markInboxLaunched as markInboxLaunchedIdb, type InboxItem } from "@/lib/inbox";
-import { Boot } from "./boot";
 import { Onboarding } from "./onboarding";
-import { QuickAdd, type QuickSeed } from "./quick-add";
+import { Boot, Confetti, Notice } from "./ui";
+
+export type Tab = "home" | "in" | "out" | "cards" | "monitor" | "more" | "inbox";
+
+export type QuickSeed = {
+  method?: PayMethod;
+  text?: string;
+  image?: File | null;
+  inboxId?: string;
+};
+
+type Ctx = {
+  user: AppUser;
+  bundle: Bundle;
+  ym: Ym;
+  setYm: (ym: Ym) => void;
+  tab: Tab;
+  setTab: (tab: Tab) => void;
+  busy: boolean;
+  notice: string | null;
+  setNotice: (value: string | null) => void;
+  confetti: boolean;
+  setConfetti: (value: boolean) => void;
+  quick: QuickSeed | null;
+  openQuick: (seed?: QuickSeed) => void;
+  closeQuick: () => void;
+  commit: (mutation: Mutation) => Promise<Bundle | null>;
+  togglePrivacy: () => void;
+  selectTheme: (theme: ThemeId) => void;
+  inboxCount: number;
+  refreshInbox: () => void;
+  markInboxLaunched: (id: string) => void;
+};
+
+const FinanceCtx = createContext<Ctx | null>(null);
+
+export function useFinance() {
+  const ctx = useContext(FinanceCtx);
+  if (!ctx) throw new Error("useFinance fora do provider");
+  return ctx;
+}
 
 function errorText(error: unknown) {
   return error instanceof Error ? error.message : "Algo deu errado.";
@@ -24,8 +55,7 @@ function errorText(error: unknown) {
 function storedTheme(): ThemeId | null {
   try {
     const value = localStorage.getItem("bankai-theme");
-    if (value === "obsidian" || value === "paper" || value === "aurora" || value === "forest" || value === "sand")
-      return value;
+    if ((THEMES as readonly string[]).includes(value ?? "")) return value as ThemeId;
   } catch {
     /* ignore */
   }
@@ -41,62 +71,32 @@ function paintTheme(theme: ThemeId) {
   }
 }
 
-type Tab = "home" | "in" | "out" | "cards" | "monitor" | "more" | "inbox";
-
-type Ctx = {
-  user: SessionUser;
-  bundle: Bundle;
-  ym: { year: number; month: number };
-  setYm: (ym: { year: number; month: number }) => void;
-  tab: Tab;
-  setTab: (tab: Tab) => void;
-  busy: boolean;
-  notice: string | null;
-  setNotice: (value: string | null) => void;
-  confetti: boolean;
-  setConfetti: (value: boolean) => void;
-  quick: QuickSeed | null;
-  openQuick: (seed?: QuickSeed) => void;
-  closeQuick: () => void;
-  commit: (mutation: Mutation) => Promise<Bundle | null>;
-  togglePrivacy: () => void;
-  selectTheme: (theme: ThemeId) => void;
-  inbox: InboxItem[];
-  refreshInbox: () => void;
-  markInboxLaunched: (id: string) => void;
-};
-
-const FinanceCtx = createContext<Ctx | null>(null);
-
-export function useFinance() {
-  const ctx = useContext(FinanceCtx);
-  if (!ctx) throw new Error("useFinance fora do provider");
-  return ctx;
-}
-
-export function FinanceProvider({ user, children }: { user: SessionUser; children: ReactNode }) {
+export function FinanceProvider({ user, children }: { user: AppUser; children: ReactNode }) {
   const [bundle, setBundle] = useState<Bundle | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
-  const [ym, setYm] = useState({ year: new Date().getFullYear(), month: new Date().getMonth() + 1 });
+  const [ym, setYm] = useState<Ym>({ year: new Date().getFullYear(), month: new Date().getMonth() + 1 });
   const [tab, setTab] = useState<Tab>("home");
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [confetti, setConfetti] = useState(false);
   const [quick, setQuick] = useState<QuickSeed | null>(null);
   const [pendingShare, setPendingShare] = useState<QuickSeed | null>(null);
-  const [inbox, setInbox] = useState<InboxItem[]>([]);
+  const [inboxCount, setInboxCount] = useState(0);
 
-  const refreshInbox = useCallback(() => {
-    void listInbox(user.id).then(setInbox).catch(() => undefined);
-  }, [user.id]);
+  function refreshInbox() {
+    void listInbox(user.id)
+      .then((items) => setInboxCount(items.filter((i) => i.status === "pendente").length))
+      .catch(() => undefined);
+  }
 
   function markInboxLaunched(id: string) {
-    void markInboxLaunchedIdb(user.id, id).then(refreshInbox);
+    void markLaunched(user.id, id).then(refreshInbox);
   }
 
   useEffect(() => {
     refreshInbox();
-  }, [refreshInbox]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user.id]);
 
   useEffect(() => {
     if (!("serviceWorker" in navigator)) return;
@@ -140,7 +140,7 @@ export function FinanceProvider({ user, children }: { user: SessionUser; childre
       void listInbox(user.id).then((items) => {
         const fresh = items.filter((item) => item.source === "share" && item.status === "pendente").slice(0, count);
         refreshInbox();
-        if (fresh.length === 1) finish({ text, image: undefined, inboxId: fresh[0].id });
+        if (fresh.length === 1) finish({ text, image: inboxFile(fresh[0]), inboxId: fresh[0].id });
         else if (fresh.length > 1) setTab("inbox");
       });
       return;
@@ -154,7 +154,6 @@ export function FinanceProvider({ user, children }: { user: SessionUser; childre
     setBusy(true);
     try {
       const before = bundle.goals.filter((goal) => goal.done).map((goal) => goal.id);
-      // Atualiza o perfil na tela na hora (evita “salvou e sumiu”).
       if (mutation.op === "profile") {
         setBundle((cur) =>
           cur
@@ -204,7 +203,6 @@ export function FinanceProvider({ user, children }: { user: SessionUser; childre
 
   if (!bundle) return <Boot />;
 
-  const theme = storedTheme() ?? bundle.profile.theme;
   const value: Ctx = {
     user,
     bundle,
@@ -227,7 +225,7 @@ export function FinanceProvider({ user, children }: { user: SessionUser; childre
     selectTheme: (next) => {
       void commit({ op: "profile", profile: { theme: next } });
     },
-    inbox,
+    inboxCount,
     refreshInbox,
     markInboxLaunched,
   };
@@ -262,7 +260,8 @@ export function FinanceProvider({ user, children }: { user: SessionUser; childre
   return (
     <FinanceCtx.Provider value={value}>
       <div className={bundle.profile.ambient ? "ambient relative z-10" : "relative z-10"}>{children}</div>
-      {quick ? <QuickAdd /> : null}
+      {notice ? <Notice message={notice} onClose={() => setNotice(null)} /> : null}
+      {confetti ? <Confetti onDone={() => setConfetti(false)} /> : null}
     </FinanceCtx.Provider>
   );
 }
