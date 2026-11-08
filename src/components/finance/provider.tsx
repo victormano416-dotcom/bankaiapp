@@ -36,6 +36,7 @@ type Ctx = {
   togglePrivacy: () => void;
   selectTheme: (theme: ThemeId) => void;
   inboxCount: number;
+  inboxTick: number;
   refreshInbox: () => void;
   markInboxLaunched: (id: string) => void;
 };
@@ -82,15 +83,20 @@ export function FinanceProvider({ user, children }: { user: AppUser; children: R
   const [quick, setQuick] = useState<QuickSeed | null>(null);
   const [pendingShare, setPendingShare] = useState<QuickSeed | null>(null);
   const [inboxCount, setInboxCount] = useState(0);
+  const [inboxTick, setInboxTick] = useState(0);
 
   function refreshInbox() {
     void listInbox(user.id)
-      .then((items) => setInboxCount(items.filter((i) => i.status === "pendente").length))
+      .then((items) => {
+        setInboxCount(items.filter((item) => item.status === "pendente").length);
+        setInboxTick((tick) => tick + 1);
+      })
       .catch(() => undefined);
   }
 
-  function markInboxLaunched(id: string) {
-    void markLaunched(user.id, id).then(refreshInbox);
+  async function markInboxLaunched(id: string) {
+    await markLaunched(id).catch(() => undefined);
+    refreshInbox();
   }
 
   useEffect(() => {
@@ -203,6 +209,7 @@ export function FinanceProvider({ user, children }: { user: AppUser; children: R
 
   if (!bundle) return <Boot />;
 
+  const theme = storedTheme() ?? bundle.profile.theme;
   const value: Ctx = {
     user,
     bundle,
@@ -226,33 +233,39 @@ export function FinanceProvider({ user, children }: { user: AppUser; children: R
       void commit({ op: "profile", profile: { theme: next } });
     },
     inboxCount,
+    inboxTick,
     refreshInbox,
     markInboxLaunched,
   };
 
   if (!bundle.profile.onboarded) {
+    const short = localStorage.getItem("bankai-intro") === "1";
     return (
       <div className={bundle.profile.ambient ? "ambient" : undefined}>
         <Onboarding
+          mode={short ? "name" : "full"}
+          theme={theme}
           defaultName={bundle.profile.displayName || user.displayName || ""}
           onTheme={(next) => {
+            paintTheme(next);
             void commit({ op: "profile", profile: { theme: next } });
           }}
-          onDone={(name) => {
+          onFinish={(name) => {
+            localStorage.setItem("bankai-intro", "1");
+            const chosen = storedTheme() ?? theme;
             void commit({
               op: "profile",
               profile: {
-                displayName: name,
+                displayName: name || user.displayName || "Você",
+                theme: chosen,
                 onboarded: true,
               },
             }).then(() => {
-              if (pendingShare) {
-                setQuick(pendingShare);
-                setPendingShare(null);
-              }
+              if (pendingShare) setQuick(pendingShare);
             });
           }}
         />
+        {notice ? <Notice text={notice} onDone={() => setNotice(null)} /> : null}
       </div>
     );
   }
@@ -260,7 +273,7 @@ export function FinanceProvider({ user, children }: { user: AppUser; children: R
   return (
     <FinanceCtx.Provider value={value}>
       <div className={bundle.profile.ambient ? "ambient relative z-10" : "relative z-10"}>{children}</div>
-      {notice ? <Notice message={notice} onClose={() => setNotice(null)} /> : null}
+      {notice ? <Notice text={notice} onDone={() => setNotice(null)} /> : null}
       {confetti ? <Confetti onDone={() => setConfetti(false)} /> : null}
     </FinanceCtx.Provider>
   );
