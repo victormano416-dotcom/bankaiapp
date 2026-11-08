@@ -1,11 +1,20 @@
-import { readReceiptWithAI } from "@/lib/finance/ai-read";
 import { useEffect, useState } from "react";
-import { CATEGORIES, INCOME_KINDS, METHODS, type PayMethod } from "@/lib/finance/types";
-import { brl, centsFromText } from "@/lib/finance/money";
+import { readReceiptWithAI } from "@/lib/finance/ai-read";
+import { markInboxLaunched as markInboxLaunchedIdb } from "@/lib/finance/inbox";
+import { centsFromText, brl } from "@/lib/finance/money";
 import { matchCardName, parseReceiptText } from "@/lib/finance/parser";
+import { INCOME_KINDS, type PayMethod } from "@/lib/finance/types";
 import type { LaunchItem } from "@/lib/finance/validate";
-import { useFinance } from "./provider";
+import { useFinance, type QuickSeed } from "./provider";
 import { Button, Field, Modal, fieldClass } from "./ui";
+
+const METHODS: { id: PayMethod; label: string }[] = [
+  { id: "credito", label: "Crédito" },
+  { id: "debito", label: "Débito" },
+  { id: "pix", label: "PIX" },
+  { id: "dinheiro", label: "Dinheiro" },
+  { id: "entrada", label: "Entrada" },
+];
 
 type Draft = {
   method: PayMethod;
@@ -13,17 +22,15 @@ type Draft = {
   description: string;
   category: string;
   incomeKind: (typeof INCOME_KINDS)[number]["id"];
-  fixed: boolean;
-  recurring: boolean;
   installments: string;
-  cardId: string;
   year: number;
   month: number;
   day: string;
   merchant: string | null;
+  cardId: string;
   newCardName: string;
   newCardLimit: string;
-  newCardDue: string;
+  recurring: boolean;
 };
 
 function emptyDraft(method: PayMethod | undefined, year: number, month: number): Draft {
@@ -33,17 +40,15 @@ function emptyDraft(method: PayMethod | undefined, year: number, month: number):
     description: "",
     category: "Outros",
     incomeKind: "extra",
-    fixed: false,
-    recurring: false,
     installments: "1",
-    cardId: "",
     year,
     month,
     day: "",
     merchant: null,
+    cardId: "",
     newCardName: "",
     newCardLimit: "",
-    newCardDue: "10",
+    recurring: false,
   };
 }
 
@@ -71,9 +76,9 @@ export function QuickAdd() {
 
   function applyText(text: string) {
     const identity = {
-      names: [bundle.profile.legalName, bundle.profile.displayName].filter(
-        (n): n is string => typeof n === "string" && n.trim().length >= 3,
-      ),
+      names: [bundle.profile.legalName, bundle.profile.displayName]
+        .filter((n): n is string => typeof n === "string" && n.trim().length >= 2)
+        .map((n) => n.trim()),
       cpfDigits: bundle.profile.cpfHint || undefined,
     };
     const parsed = parseReceiptText(text, new Date(), identity);
@@ -84,9 +89,11 @@ export function QuickAdd() {
       setPhase("form");
       return;
     }
+    // Se a IA/OCR disse o tipo, usa; se não, deixa PIX só visualmente e pede confirmação
+    const method = parsed.method;
     setDraft((prev) => ({
       ...prev,
-      method: parsed.method ?? prev.method,
+      method: method ?? "pix",
       digits: String(item.totalCents),
       description: item.description,
       category: item.category,
@@ -98,12 +105,66 @@ export function QuickAdd() {
       cardId: card ?? prev.cardId,
     }));
     setPhase("form");
-    setRequiresMethodConfirmation(parsed.method === null);
+    setRequiresMethodConfirmation(method === null);
     setError(
-      parsed.method === null
-        ? "Não consegui identificar se é entrada, gasto ou compra no crédito. Confirme o tipo antes de salvar."
+      method === null
+        ? "Confirme se é Entrada (você recebeu) ou PIX (você enviou) antes de salvar."
         : "",
     );
+  }
+
+  async function prepareOcrImage(file: File): Promise<Blob> {
+    try {
+      const bitmap = await createImageBitmap(file);
+      const max = 1600;
+      const scale = Math.min(1, max / Math.max(bitmap.width, bitmap.height));
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+      canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return file;
+      ctx.fillStyle = "#fff";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+      // leve contraste ajuda o OCR em prints escuros do Nubank
+      try {
+        const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const d = img.data;
+        for (let i = 0; i < d.length; i += 4) {
+          const g = d[i] * 0.3 + d[i + 1] * 0.6 + d[i + 2] * 0.1;
+          const v = g < 140 ? Math.max(0, g * 0.7) : Math.min(255, g * 1.15);
+          d[i] = d[i + 1] = d[i + 2] = v;
+        }
+        ctx.putImageData(img, 0, 0);
+      } catch {
+        /* ignore */
+      }
+      const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
+      return blob ?? file;
+    } catch {
+      return file;
+    }
+  }
+
+  async function readWithTesseract(file: File): Promise<string> {
+    const { createWorker } = await import("tesseract.js");
+    const prepared = await prepareOcrImage(file);
+    let lastError: unknown;
+    for (const lang of ["por", "eng"] as const) {
+      let worker: Awaited<ReturnType<typeof createWorker>> | null = null;
+      try {
+        worker = await createWorker(lang);
+        const result = await worker.recognize(prepared);
+        const text = (result.data.text || "").trim();
+        if (text.length >= 4) return text;
+      } catch (error) {
+        lastError = error;
+      } finally {
+        if (worker) await worker.terminate().catch(() => undefined);
+      }
+    }
+    if (lastError) throw lastError;
+    return "";
   }
 
   async function readImage(file: File) {
@@ -115,26 +176,28 @@ export function QuickAdd() {
         applyText(ai);
         return;
       }
-      const { createWorker } = await import("tesseract.js");
-      const worker = await createWorker("por");
-      try {
-        const result = await worker.recognize(file);
-        applyText(result.data.text || "");
-      } finally {
-        await worker.terminate();
+    } catch {
+      /* IA indisponível — tenta OCR local */
+    }
+    try {
+      const text = await readWithTesseract(file);
+      if (!text) {
+        setPhase("form");
+        setError("Não consegui ler a imagem. Toque em Colar texto ou digite o valor.");
+        return;
       }
+      applyText(text);
     } catch {
       setPhase("form");
-      setError("Não consegui ler a imagem. Digite o valor ou cole o extrato.");
+      setError("Não consegui ler a imagem. Toque em Colar texto ou digite o valor.");
     }
   }
 
   async function submitForm() {
     if (requiresMethodConfirmation) {
-      setError("Escolha Entrada, Débito, Crédito, PIX ou Dinheiro antes de salvar.");
+      setError("Escolha Entrada (recebeu) ou PIX (enviou) tocando no tipo acima.");
       return;
     }
-
     const total = centsFromText(draft.digits);
     if (total <= 0) {
       setError("Informe um valor válido.");
@@ -169,7 +232,7 @@ export function QuickAdd() {
         newCard = {
           name: draft.newCardName.trim(),
           limitCents: centsFromText(draft.newCardLimit),
-          dueDay: Number(draft.newCardDue) || 10,
+          dueDay: 10,
           tone: "ink",
         };
       }
@@ -177,7 +240,7 @@ export function QuickAdd() {
         {
           kind: "purchase",
           data: {
-            cardId: draft.cardId || "",
+            cardId: draft.cardId || "__new__",
             description: draft.description.trim() || "Compra",
             category: draft.category,
             merchant: draft.merchant,
@@ -198,7 +261,7 @@ export function QuickAdd() {
             category: draft.category,
             description: draft.description.trim() || "Gasto",
             amountCents: total,
-            fixed: draft.fixed,
+            fixed: false,
             recurring: draft.recurring,
             year: draft.year,
             month: draft.month,
@@ -295,11 +358,13 @@ export function QuickAdd() {
                 value={draft.category}
                 onChange={(e) => setDraft((p) => ({ ...p, category: e.target.value }))}
               >
-                {CATEGORIES.map((c) => (
-                  <option key={c} value={c}>
-                    {c}
-                  </option>
-                ))}
+                {["Outros", "Moradia", "Mercado", "Transporte", "Saúde", "Assinaturas", "Educação", "Restaurante", "Roupas", "Lazer"].map(
+                  (c) => (
+                    <option key={c} value={c}>
+                      {c}
+                    </option>
+                  ),
+                )}
               </select>
             </Field>
           )}
@@ -341,19 +406,6 @@ export function QuickAdd() {
                       }
                     />
                   </Field>
-                  <Field label="Vence dia">
-                    <input
-                      className={fieldClass}
-                      inputMode="numeric"
-                      value={draft.newCardDue}
-                      onChange={(e) =>
-                        setDraft((p) => ({
-                          ...p,
-                          newCardDue: e.target.value.replace(/\D/g, "").slice(0, 2),
-                        }))
-                      }
-                    />
-                  </Field>
                 </>
               ) : null}
               <Field label="Parcelas">
@@ -361,7 +413,7 @@ export function QuickAdd() {
                   className={fieldClass}
                   inputMode="numeric"
                   value={draft.installments}
-                  onChange={(e) => setDraft((p) => ({ ...p, installments: e.target.value }))}
+                  onChange={(e) => setDraft((p) => ({ ...p, installments: e.target.value.replace(/\D/g, "").slice(0, 2) }))}
                 />
               </Field>
             </>
