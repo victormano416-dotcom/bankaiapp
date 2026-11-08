@@ -111,55 +111,170 @@ export function QuickAdd() {
     );
   }
 
-  async function prepareOcrImage(file: File): Promise<Blob> {
+  /** Várias versões da mesma imagem — OCR local se comporta melhor em prints escuros do Nubank. */
+  async function prepareOcrVariants(file: File): Promise<Blob[]> {
     try {
       const bitmap = await createImageBitmap(file);
-      const max = 1600;
-      const scale = Math.min(1, max / Math.max(bitmap.width, bitmap.height));
-      const canvas = document.createElement("canvas");
-      canvas.width = Math.max(1, Math.round(bitmap.width * scale));
-      canvas.height = Math.max(1, Math.round(bitmap.height * scale));
-      const ctx = canvas.getContext("2d");
-      if (!ctx) return file;
-      ctx.fillStyle = "#fff";
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-      ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-      try {
-        const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
-        const d = img.data;
-        for (let i = 0; i < d.length; i += 4) {
-          const g = d[i] * 0.3 + d[i + 1] * 0.6 + d[i + 2] * 0.1;
-          const v = g < 140 ? Math.max(0, g * 0.7) : Math.min(255, g * 1.15);
-          d[i] = d[i + 1] = d[i + 2] = v;
+      const minW = 1280;
+      const maxW = 1800;
+      let scale = 1;
+      if (bitmap.width < minW) scale = minW / bitmap.width;
+      else if (bitmap.width > maxW) scale = maxW / bitmap.width;
+      const w = Math.max(1, Math.round(bitmap.width * scale));
+      const h = Math.max(1, Math.round(bitmap.height * scale));
+
+      const base = document.createElement("canvas");
+      base.width = w;
+      base.height = h;
+      const bctx = base.getContext("2d");
+      if (!bctx) return [file];
+      bctx.fillStyle = "#fff";
+      bctx.fillRect(0, 0, w, h);
+      bctx.drawImage(bitmap, 0, 0, w, h);
+
+      const src = bctx.getImageData(0, 0, w, h);
+      const gray = new Uint8ClampedArray(w * h);
+      let sum = 0;
+      for (let i = 0, p = 0; i < src.data.length; i += 4, p++) {
+        const g = src.data[i] * 0.299 + src.data[i + 1] * 0.587 + src.data[i + 2] * 0.114;
+        gray[p] = g;
+        sum += g;
+      }
+      const mean = sum / gray.length;
+      // Print escuro (Nubank) → inverter pra texto escuro em fundo claro
+      const darkUi = mean < 110;
+      if (darkUi) {
+        for (let p = 0; p < gray.length; p++) gray[p] = 255 - gray[p];
+      }
+
+      // Estica contraste
+      let min = 255;
+      let max = 0;
+      for (let p = 0; p < gray.length; p++) {
+        const v = gray[p];
+        if (v < min) min = v;
+        if (v > max) max = v;
+      }
+      const span = Math.max(1, max - min);
+      const stretched = new Uint8ClampedArray(gray.length);
+      for (let p = 0; p < gray.length; p++) {
+        stretched[p] = Math.round(((gray[p] - min) / span) * 255);
+      }
+
+      function toBlob(pixels: Uint8ClampedArray, threshold?: number): Promise<Blob | null> {
+        const c = document.createElement("canvas");
+        c.width = w;
+        c.height = h;
+        const ctx = c.getContext("2d");
+        if (!ctx) return Promise.resolve(null);
+        const img = ctx.createImageData(w, h);
+        for (let p = 0, i = 0; p < pixels.length; p++, i += 4) {
+          let v = pixels[p];
+          if (threshold !== undefined) v = v > threshold ? 255 : 0;
+          img.data[i] = img.data[i + 1] = img.data[i + 2] = v;
+          img.data[i + 3] = 255;
         }
         ctx.putImageData(img, 0, 0);
-      } catch {
-        /* ignore */
+        return new Promise((resolve) => c.toBlob(resolve, "image/png"));
       }
-      const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
-      return blob ?? file;
+
+      const variants: Blob[] = [];
+      const contrast = await toBlob(stretched);
+      if (contrast) variants.push(contrast);
+      // Limiar Otsu + fixos
+      const hist = new Array(256).fill(0);
+      for (let p = 0; p < stretched.length; p++) hist[stretched[p]]++;
+      const total = stretched.length;
+      let sumAll = 0;
+      for (let i = 0; i < 256; i++) sumAll += i * hist[i];
+      let sumB = 0;
+      let wB = 0;
+      let maxVar = -1;
+      let otsu = 128;
+      for (let t = 0; t < 256; t++) {
+        wB += hist[t];
+        if (wB === 0) continue;
+        const wF = total - wB;
+        if (wF === 0) break;
+        sumB += t * hist[t];
+        const mB = sumB / wB;
+        const mF = (sumAll - sumB) / wF;
+        const between = wB * wF * (mB - mF) * (mB - mF);
+        if (between > maxVar) {
+          maxVar = between;
+          otsu = t;
+        }
+      }
+      for (const th of [otsu, 140, 160]) {
+        const bin = await toBlob(stretched, th);
+        if (bin) variants.push(bin);
+      }
+      return variants.length ? variants : [file];
     } catch {
-      return file;
+      return [file];
     }
+  }
+
+  function scoreOcrText(text: string): number {
+    const t = text.toLowerCase();
+    let score = Math.min(40, text.length / 4);
+    if (/r\$\s*\d/.test(t) || /\d+[.,]\d{2}/.test(t)) score += 30;
+    if (/\bpix\b|transfer[eê]ncia|comprovante|recebeu|enviou|valor/.test(t)) score += 25;
+    if (/\b(nubank|inter|c6|bradesco|ita[uú]|santander|bb|caixa)\b/.test(t)) score += 10;
+    if (/\d{1,2}\/\d{1,2}\/\d{2,4}/.test(t) || /\d{1,2}\s+(jan|fev|mar|abr|mai|jun|jul|ago|set|out|nov|dez)/.test(t))
+      score += 10;
+    if ((text.match(/[^\w\s.,:$R\/\-]/g) || []).length > text.length * 0.25) score -= 20;
+    return score;
   }
 
   async function readWithTesseract(file: File): Promise<string> {
     const { createWorker } = await import("tesseract.js");
-    const prepared = await prepareOcrImage(file);
+    const variants = await prepareOcrVariants(file);
+    const psms = [6, 4, 3, 11] as const;
+    let best = "";
+    let bestScore = -1;
     let lastError: unknown;
-    for (const lang of ["por", "eng"] as const) {
-      let worker: Awaited<ReturnType<typeof createWorker>> | null = null;
+
+    let worker: Awaited<ReturnType<typeof createWorker>> | null = null;
+    try {
       try {
-        worker = await createWorker(lang);
-        const result = await worker.recognize(prepared);
-        const text = (result.data.text || "").trim();
-        if (text.length >= 4) return text;
+        worker = await createWorker("por");
       } catch (error) {
         lastError = error;
-      } finally {
-        if (worker) await worker.terminate().catch(() => undefined);
+        worker = await createWorker("eng");
       }
+      await worker.setParameters({
+        tessedit_char_whitelist:
+          "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyzÁÀÂÃÉÊÍÓÔÕÚÜÇáàâãéêíóôõúüç$R.,/-: ",
+        preserve_interword_spaces: "1",
+      });
+
+      for (const blob of variants) {
+        for (const psm of psms) {
+          try {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            await worker.setParameters({ tessedit_pageseg_mode: psm as any });
+            const result = await worker.recognize(blob);
+            const text = (result.data.text || "").trim();
+            if (text.length < 4) continue;
+            const score = scoreOcrText(text);
+            if (score > bestScore) {
+              bestScore = score;
+              best = text;
+            }
+            if (score >= 70) {
+              return best;
+            }
+          } catch (error) {
+            lastError = error;
+          }
+        }
+      }
+    } finally {
+      if (worker) await worker.terminate().catch(() => undefined);
     }
+
+    if (best) return best;
     if (lastError) throw lastError;
     return "";
   }
@@ -167,27 +282,39 @@ export function QuickAdd() {
   async function readImage(file: File) {
     setPhase("reading");
     setError("");
+    // OCR local primeiro (sem chave) — meta: igual ao caixa antigo
     try {
-      const ai = await readReceiptWithAI(file);
-      if (ai) {
-        applyText(ai);
+      const local = await readWithTesseract(file);
+      if (local && scoreOcrText(local) >= 35) {
+        applyText(local);
+        return;
+      }
+      try {
+        const ai = await readReceiptWithAI(file);
+        if (ai) {
+          applyText(ai);
+          return;
+        }
+      } catch {
+        /* sem IA */
+      }
+      if (local) {
+        applyText(local);
         return;
       }
     } catch {
-      /* IA indisponível — tenta OCR local */
-    }
-    try {
-      const text = await readWithTesseract(file);
-      if (!text) {
-        setPhase("form");
-        setError("Não consegui ler a imagem. Toque em Colar texto ou digite o valor.");
-        return;
+      try {
+        const ai = await readReceiptWithAI(file);
+        if (ai) {
+          applyText(ai);
+          return;
+        }
+      } catch {
+        /* ignore */
       }
-      applyText(text);
-    } catch {
-      setPhase("form");
-      setError("Não consegui ler a imagem. Toque em Colar texto ou digite o valor.");
     }
+    setPhase("form");
+    setError("Não consegui ler a imagem. Toque em Colar texto ou digite o valor.");
   }
 
   async function submitForm() {
