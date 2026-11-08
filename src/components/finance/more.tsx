@@ -238,7 +238,7 @@ export function MoreView() {
         <Button
           tone="line"
           className="w-full"
-          onClick={() => downloadText(`bankai-${ym.year}-${ym.month}.csv`, bundleToCsv(bundle, ym))}
+          onClick={() => downloadText(`bankai-${ym.year}-${ym.month}.csv`, bundleToCsv(bundle, ym), "text/csv;charset=utf-8")}
         >
           Exportar CSV do mês
         </Button>
@@ -351,7 +351,6 @@ function GoalRow({ goal, hidden }: { goal: Goal; hidden: boolean }) {
                   savedCents: goal.savedCents + add,
                   year: goal.year,
                   month: goal.month,
-                  day: goal.day,
                 },
               }).then(() => setDigits(""));
             }}
@@ -404,7 +403,6 @@ function GoalForm({ onClose }: { onClose: () => void }) {
                 savedCents: 0,
                 year: y || ym.year,
                 month: m || ym.month,
-                day: null,
               },
             }).then((saved) => {
               if (saved) onClose();
