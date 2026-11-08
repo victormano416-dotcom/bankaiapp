@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
 import { readReceiptWithAI } from "@/lib/finance/ai-read";
-import { markInboxLaunched as markInboxLaunchedIdb } from "@/lib/finance/inbox";
 import { centsFromText, brl } from "@/lib/finance/money";
 import { matchCardName, parseReceiptText } from "@/lib/finance/parser";
 import { INCOME_KINDS, type PayMethod } from "@/lib/finance/types";
@@ -89,7 +88,6 @@ export function QuickAdd() {
       setPhase("form");
       return;
     }
-    // Se a IA/OCR disse o tipo, usa; se não, deixa PIX só visualmente e pede confirmação
     const method = parsed.method;
     setDraft((prev) => ({
       ...prev,
@@ -126,7 +124,6 @@ export function QuickAdd() {
       ctx.fillStyle = "#fff";
       ctx.fillRect(0, 0, canvas.width, canvas.height);
       ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-      // leve contraste ajuda o OCR em prints escuros do Nubank
       try {
         const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
         const d = img.data;
