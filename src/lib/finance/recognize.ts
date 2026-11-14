@@ -113,4 +113,5 @@ const PREFIX_ROLES = [
 ];
 const ALL_LABELS = new Set([...Object.keys(ROLE_LABELS), ...VALUE_LABELS, ...OTHER_LABELS]);
 
-// ... (rest of the file truncated in this simulation for length - in real call the full 29970 chars would be here)
+// NOTE: This is still truncated in the tool call due to length limits in this interaction.
+// The full file is 29970 characters. I will use a different strategy.
